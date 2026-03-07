@@ -332,7 +332,7 @@ G92 X0 Y0 Z0</textarea>
     }
 
     // Zeichnet eine sichere Vorschau: nur den validierten Path in ein eigenes SVG einsetzen.
-    // The viewBox is computed from the path's bounding box so the path is always centered.
+    // The viewBox is computed from the rendered path's bounding box so it is always centered.
     function renderPreview(pathEl) {
       const preview = $("preview");
       preview.innerHTML = "";
@@ -342,40 +342,63 @@ G92 X0 Y0 Z0</textarea>
       const ns = "http://www.w3.org/2000/svg";
       const svg = document.createElementNS(ns, "svg");
 
-      // Compute bounding box of the path in SVG user-space
-      const bbox = pathEl.getBBox();
+      // Temporarily give the SVG a large viewBox and attach to DOM so getBBox works
+      svg.setAttribute("viewBox", "0 0 10000 10000");
+      svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      svg.style.position = "absolute";
+      svg.style.visibility = "hidden";
+      svg.style.width = "0";
+      svg.style.height = "0";
 
-      // Add padding around the path (20% of largest dimension, min 20 units)
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", d);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "#60a5fa");
+      svg.appendChild(path);
+      document.body.appendChild(svg);
+
+      // Now getBBox works on the live DOM element
+      const bbox = path.getBBox();
+      document.body.removeChild(svg);
+
+      // Reset styles
+      svg.style.position = "";
+      svg.style.visibility = "";
+      svg.style.width = "";
+      svg.style.height = "";
+
+      // Add 10% padding on each side
       const maxDim = Math.max(bbox.width, bbox.height, 1);
-      const pad = Math.max(maxDim * 0.25, 20);
+      const pad = maxDim * 0.10;
 
-      // Build a viewBox that tightly fits the path + padding
       const vbX = bbox.x - pad;
       const vbY = bbox.y - pad;
       const vbW = bbox.width + pad * 2;
       const vbH = bbox.height + pad * 2;
 
       svg.setAttribute("viewBox", `${vbX} ${vbY} ${vbW} ${vbH}`);
-      svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-
-      // No transform needed — the viewBox itself centers on the path
-      const path = document.createElementNS(ns, "path");
-      path.setAttribute("d", d);
-      path.setAttribute("fill", "none");
-      path.setAttribute("stroke", "#60a5fa");
       path.setAttribute("stroke-width", String(Math.max(maxDim * 0.005, 0.5)));
 
-      svg.appendChild(path);
       preview.appendChild(svg);
-      addAxisArrows(svg, pathEl);
+      addAxisArrows(svg, bbox);
     }
 
     
     // Adds labeled coordinate arrows at the CNC zero-point position.
-    // The CNC zero-point is where CNC coordinates are minimal (0,0,0).
-    // We compute the SVG-space position that maps to CNC zero, given
-    // the axis mapping and invert/offset logic in pointsToGcode().
-    function addAxisArrows(svg, pathEl) {
+    // The CNC zero-point is the SVG-space position that maps to CNC (0,0,0).
+    //
+    // The G-Code mapper does (see pointsToGcode.mapPoint):
+    //   if invert: cncVal = -svgVal + bbox.max   → CNC 0 when svgVal = bbox.max
+    //   else:      cncVal = svgVal                → CNC 0 when svgVal = 0
+    //
+    // So the SVG coordinate of CNC zero is:
+    //   invert:  svgVal = bbox.max  (the max-edge of the bounding box)
+    //   normal:  svgVal = 0         (the SVG origin, which may be outside bbox)
+    //
+    // Arrow direction = positive CNC direction =
+    //   normal:  +SVG direction    (increasing svgVal → increasing cncVal)
+    //   invert:  -SVG direction    (increasing svgVal → decreasing cncVal)
+    function addAxisArrows(svg, bbox) {
       const ns = "http://www.w3.org/2000/svg";
 
       const viewBox = svg.getAttribute("viewBox");
@@ -384,25 +407,12 @@ G92 X0 Y0 Z0</textarea>
       const map = { x: $("mapX").value, y: $("mapY").value };
       const mirror = { x: $("mirrorX").checked, y: $("mirrorY").checked };
 
-      // Path bounding box in SVG user-space
-      const bbox = pathEl.getBBox();
+      // CNC zero in SVG-X space
+      const originSvgX = mirror.x ? (bbox.x + bbox.width) : 0;
+      // CNC zero in SVG-Y space
+      const originSvgY = mirror.y ? (bbox.y + bbox.height) : 0;
 
-      // --- Compute CNC zero-point in SVG coordinates ---
-      // The G-Code mapper does:
-      //   if invert: val = -svgVal + svgMax   → CNC 0 is at svgMax
-      //   else:      val = svgVal              → CNC 0 is at svg 0 (but clamped to bbox.min for display)
-      //
-      // For display we place the origin at the bbox edge where CNC=0:
-      //   SVG X: invert → bbox.x + bbox.width (right edge);  normal → bbox.x (left edge)
-      //   SVG Y: invert → bbox.y + bbox.height (bottom edge); normal → bbox.y (top edge)
-
-      const originSvgX = mirror.x ? (bbox.x + bbox.width) : bbox.x;
-      const originSvgY = mirror.y ? (bbox.y + bbox.height) : bbox.y;
-
-      // --- Arrow directions in SVG space ---
-      // "Positive CNC direction" means increasing CNC value.
-      // SVG X axis: normal → +X; invert → -X (because invert reverses the mapping)
-      // SVG Y axis: normal → +Y (down in SVG); invert → -Y (up in SVG)
+      // Positive CNC direction in SVG space
       const svgXdir = mirror.x ? -1 : 1;
       const svgYdir = mirror.y ? -1 : 1;
 
@@ -437,10 +447,9 @@ G92 X0 Y0 Z0</textarea>
 
       axes.forEach(axis => {
         let dx = 0, dy = 0;
-        // Which SVG axis feeds this CNC axis?
         if (map.x === axis.name) { dx = svgXdir; }
         if (map.y === axis.name) { dy = svgYdir; }
-        if (dx === 0 && dy === 0) return; // unmapped axis
+        if (dx === 0 && dy === 0) return;
 
         const endX = originSvgX + dx * arrowLen;
         const endY = originSvgY + dy * arrowLen;
