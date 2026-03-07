@@ -244,7 +244,45 @@ G92 X0 Y0 Z0</textarea>
         .filter(Boolean);
     }
 
-    // --- Zustand ---
+    // --- Cookie storage for axis mapping ---
+    const COOKIE_NAME = "svg2gcode_config";
+    const COOKIE_DAYS = 30;
+
+    function saveConfig() {
+      const config = {
+        mapX: $("mapX").value,
+        mapY: $("mapY").value,
+        mirrorX: $("mirrorX").checked,
+        mirrorY: $("mirrorY").checked
+      };
+      const expires = new Date(Date.now() + COOKIE_DAYS * 864e5).toUTCString();
+      document.cookie = `${COOKIE_NAME}=${encodeURIComponent(JSON.stringify(config))}; expires=${expires}; path=/`;
+    }
+
+    function loadConfig() {
+      const match = document.cookie.match(new RegExp(`(?:^|; )${COOKIE_NAME}=([^;]*)`));
+      if (!match) return false;
+      try {
+        const config = JSON.parse(decodeURIComponent(match[1]));
+        if (config.mapX && ["X","Y","Z"].includes(config.mapX)) $("mapX").value = config.mapX;
+        if (config.mapY && ["X","Y","Z"].includes(config.mapY)) $("mapY").value = config.mapY;
+        if (typeof config.mirrorX === "boolean") $("mirrorX").checked = config.mirrorX;
+        if (typeof config.mirrorY === "boolean") $("mirrorY").checked = config.mirrorY;
+        return true;
+      } catch (e) {
+        console.warn("Failed to parse cookie", e);
+        return false;
+      }
+    }
+
+    // Load config and attach change listeners on page load
+    document.addEventListener("DOMContentLoaded", () => {
+      loadConfig();
+      [$("mapX"), $("mapY"), $("mirrorX"), $("mirrorY")].forEach(el => {
+        if (el) el.addEventListener("change", saveConfig);
+      });
+    });
+// --- Zustand ---
     let svgText = "";
     let parsedPath = null; // SVGPathElement (aus DOMParser-Dokument)
     let lastGcode = "";
@@ -267,7 +305,7 @@ G92 X0 Y0 Z0</textarea>
 
       const paths = svg.querySelectorAll("path");
       if (paths.length !== 1) {
-        return { ok: false, error: `Erwartet genau 1 <path>, gefunden: ${paths.length}.` };
+        return { ok: false, error: `Expected exactly 1 <path>, found: ${paths.length}.` };
       }
 
       // Verbotene zusätzliche Shapes (laut Anforderung: nur ein Path, keine anderen Shapes)
@@ -276,7 +314,7 @@ G92 X0 Y0 Z0</textarea>
       if (others.length > 0) {
         return {
           ok: false,
-          error: `Nicht erlaubt: andere Shapes gefunden (${others.length}). Nur ein <path> ist erlaubt.`
+          error: `Not allowed: other shapes found (${others.length}). Only one <path> is allowed.`
         };
       }
 
