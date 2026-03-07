@@ -982,6 +982,9 @@ G92 X0 Y0 Z0</textarea>
         out.push(`G1 X${fmt(p.X, decimals)} Y${fmt(p.Y, decimals)} Z${fmt(p.Z, decimals)} F${feed}`);
       }
 
+      // Return to CNC origin after cutting
+      out.push(`G0 X0 Y0 Z0`);
+
       out.push(...footerLines);
       return out.join("\n") + "\n";
     }
