@@ -124,9 +124,9 @@
         </div>
 
         <div class="row">
-          <label for="samples">Sampling points along path (more = finer segmentation)</label>
-          <input id="samples" type="number" min="10" step="10" value="400" />
-          <div class="hint">Arcs/circles in the path are output as line segments.</div>
+          <label for="tolerance">Curve tolerance (mm) — smaller = more detail</label>
+          <input id="tolerance" type="number" min="0.001" step="0.01" value="0.05" />
+          <div class="hint">Adaptive sampling: adds points only where needed. Straight segments stay lean, curves get detail.</div>
         </div>
 
         <div class="row inline">
@@ -483,11 +483,15 @@ G92 X0 Y0 Z0</textarea>
       });
     }
 
-    // Erzeugt Stützpunkte entlang des gesamten Shapes.
-    // getTotalLength() / getPointAtLength() work on all SVG geometry elements
-    // but require a live (rendered) DOM for non-path elements.
-    function samplePath(shapeEl, sampleCount) {
-      // Temporarily mount in a live SVG so getTotalLength works for all shape types
+    // --- Adaptive sampling ---
+    // 1. Extract anchor points from the SVG path's `d` attribute (M/L/C/Q/A/Z endpoints).
+    //    For non-path shapes there are no anchors, so we fall back to uniform initial seed.
+    // 2. Map anchors to arc-length positions via binary search on getPointAtLength().
+    // 3. Between consecutive anchors, recursively subdivide: if the midpoint deviates
+    //    from the straight line by more than `tolerance`, split. Max recursion depth = 12.
+    // 4. First and last anchor are always included exactly.
+
+    function sampleShape(shapeEl, tolerance) {
       const ns = "http://www.w3.org/2000/svg";
       const tmpSvg = document.createElementNS(ns, "svg");
       tmpSvg.setAttribute("viewBox", "0 0 10000 10000");
@@ -499,21 +503,238 @@ G92 X0 Y0 Z0</textarea>
       tmpSvg.appendChild(clone);
       document.body.appendChild(tmpSvg);
 
-      const total = clone.getTotalLength();
-      if (!isFinite(total) || total <= 0) {
+      const totalLen = clone.getTotalLength();
+      if (!isFinite(totalLen) || totalLen <= 0) {
         document.body.removeChild(tmpSvg);
         throw new Error("Shape length is 0 or invalid.");
       }
 
-      const n = Math.max(2, sampleCount | 0);
-      const points = [];
-      for (let i = 0; i <= n; i++) {
-        const t = (i / n) * total;
+      // Helper: point at arc-length t
+      const ptAt = (t) => {
         const p = clone.getPointAtLength(t);
-        points.push({ x: p.x, y: p.y });
+        return { x: p.x, y: p.y };
+      };
+
+      // --- Step 1: Extract anchor points as XY coordinates ---
+      const anchorCoords = extractAnchors(shapeEl);
+
+      // --- Step 2: Map anchor XY coords to arc-length positions ---
+      let anchorLengths;
+      if (anchorCoords.length >= 2) {
+        anchorLengths = mapAnchorsToLength(anchorCoords, clone, totalLen);
+      } else {
+        // Fallback: uniform seed for non-path shapes or degenerate paths
+        const seedCount = Math.max(20, Math.ceil(totalLen / 1));
+        anchorLengths = [];
+        for (let i = 0; i <= seedCount; i++) {
+          anchorLengths.push((i / seedCount) * totalLen);
+        }
       }
+
+      // Ensure 0 and totalLen are included
+      if (anchorLengths[0] > 0.001) anchorLengths.unshift(0);
+      if (totalLen - anchorLengths[anchorLengths.length - 1] > 0.001) anchorLengths.push(totalLen);
+
+      // --- Step 3: Recursive subdivision between consecutive anchors ---
+      const tolSq = tolerance * tolerance;
+      const MAX_DEPTH = 12;
+      const points = [ptAt(anchorLengths[0])];
+
+      for (let i = 1; i < anchorLengths.length; i++) {
+        subdivide(anchorLengths[i - 1], anchorLengths[i], ptAt, tolSq, MAX_DEPTH, points);
+      }
+
       document.body.removeChild(tmpSvg);
       return points;
+    }
+
+    // Recursively subdivide an arc-length interval [tA, tB].
+    // Adds the midpoint (and recurses) if it deviates from the straight line A→B.
+    // Always adds B at the end.
+    function subdivide(tA, tB, ptAt, tolSq, depth, out) {
+      if (depth <= 0 || (tB - tA) < 0.001) {
+        out.push(ptAt(tB));
+        return;
+      }
+      const tMid = (tA + tB) / 2;
+      const pA = out[out.length - 1]; // already in the list
+      const pB = ptAt(tB);
+      const pMid = ptAt(tMid);
+
+      // Distance of pMid from line segment pA→pB
+      const mx = (pA.x + pB.x) / 2;
+      const my = (pA.y + pB.y) / 2;
+      const dSq = (pMid.x - mx) * (pMid.x - mx) + (pMid.y - my) * (pMid.y - my);
+
+      if (dSq > tolSq) {
+        // Need more detail: recurse left half, then right half
+        subdivide(tA, tMid, ptAt, tolSq, depth - 1, out);
+        subdivide(tMid, tB, ptAt, tolSq, depth - 1, out);
+      } else {
+        // Straight enough: just add the endpoint
+        out.push(pB);
+      }
+    }
+
+    // Extract anchor point coordinates from a path's `d` attribute.
+    // Returns [{x,y}, ...] for each explicit endpoint in path commands.
+    // For non-path shapes returns [].
+    function extractAnchors(shapeEl) {
+      if (shapeEl.tagName.toLowerCase() !== "path") return [];
+      const d = shapeEl.getAttribute("d") || "";
+      if (!d.trim()) return [];
+
+      const anchors = [];
+      // Tokenize: split into commands + number sequences
+      const tokens = d.match(/[MmLlHhVvCcSsQqTtAaZz]|[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g);
+      if (!tokens) return [];
+
+      let cx = 0, cy = 0; // current point
+      let sx = 0, sy = 0; // subpath start
+      let cmd = "M";
+      let i = 0;
+
+      function nextNum() { return parseFloat(tokens[i++]) || 0; }
+
+      while (i < tokens.length) {
+        const t = tokens[i];
+        if (/[A-Za-z]/.test(t)) {
+          cmd = t;
+          i++;
+          if (cmd === "Z" || cmd === "z") {
+            cx = sx; cy = sy;
+            anchors.push({ x: cx, y: cy });
+            continue;
+          }
+        }
+
+        const isRel = cmd === cmd.toLowerCase();
+        const CMD = cmd.toUpperCase();
+
+        switch (CMD) {
+          case "M": {
+            const x = nextNum(), y = nextNum();
+            cx = isRel ? cx + x : x;
+            cy = isRel ? cy + y : y;
+            sx = cx; sy = cy;
+            anchors.push({ x: cx, y: cy });
+            // Subsequent coords after M are implicit L
+            cmd = isRel ? "l" : "L";
+            break;
+          }
+          case "L": {
+            const x = nextNum(), y = nextNum();
+            cx = isRel ? cx + x : x;
+            cy = isRel ? cy + y : y;
+            anchors.push({ x: cx, y: cy });
+            break;
+          }
+          case "H": {
+            const x = nextNum();
+            cx = isRel ? cx + x : x;
+            anchors.push({ x: cx, y: cy });
+            break;
+          }
+          case "V": {
+            const y = nextNum();
+            cy = isRel ? cy + y : y;
+            anchors.push({ x: cx, y: cy });
+            break;
+          }
+          case "C": {
+            nextNum(); nextNum(); // cp1
+            nextNum(); nextNum(); // cp2
+            const x = nextNum(), y = nextNum();
+            cx = isRel ? cx + x : x;
+            cy = isRel ? cy + y : y;
+            anchors.push({ x: cx, y: cy });
+            break;
+          }
+          case "S": {
+            nextNum(); nextNum(); // cp2
+            const x = nextNum(), y = nextNum();
+            cx = isRel ? cx + x : x;
+            cy = isRel ? cy + y : y;
+            anchors.push({ x: cx, y: cy });
+            break;
+          }
+          case "Q": {
+            nextNum(); nextNum(); // cp
+            const x = nextNum(), y = nextNum();
+            cx = isRel ? cx + x : x;
+            cy = isRel ? cy + y : y;
+            anchors.push({ x: cx, y: cy });
+            break;
+          }
+          case "T": {
+            const x = nextNum(), y = nextNum();
+            cx = isRel ? cx + x : x;
+            cy = isRel ? cy + y : y;
+            anchors.push({ x: cx, y: cy });
+            break;
+          }
+          case "A": {
+            nextNum(); nextNum(); nextNum(); // rx, ry, rotation
+            nextNum(); nextNum();             // large-arc, sweep
+            const x = nextNum(), y = nextNum();
+            cx = isRel ? cx + x : x;
+            cy = isRel ? cy + y : y;
+            anchors.push({ x: cx, y: cy });
+            break;
+          }
+          default:
+            i++; // skip unknown
+        }
+      }
+      return anchors;
+    }
+
+    // Map anchor XY coordinates to arc-length positions on the shape.
+    // Uses binary search on getPointAtLength() walking forward through the path.
+    function mapAnchorsToLength(anchors, shapeClone, totalLen) {
+      const lengths = [0]; // first anchor is always at t=0
+      let searchStart = 0;
+
+      for (let a = 1; a < anchors.length; a++) {
+        const target = anchors[a];
+        // Binary search in [searchStart, totalLen] for the length closest to target
+        let lo = searchStart;
+        let hi = totalLen;
+        // First narrow down with a coarse scan
+        const steps = 200;
+        const span = hi - lo;
+        let bestT = lo;
+        let bestDist = Infinity;
+
+        for (let s = 0; s <= steps; s++) {
+          const t = lo + (s / steps) * span;
+          const p = shapeClone.getPointAtLength(t);
+          const d = (p.x - target.x) ** 2 + (p.y - target.y) ** 2;
+          if (d < bestDist) { bestDist = d; bestT = t; }
+        }
+
+        // Refine with binary-style narrowing
+        let refineLo = Math.max(lo, bestT - span / steps);
+        let refineHi = Math.min(hi, bestT + span / steps);
+        for (let r = 0; r < 15; r++) {
+          const t1 = refineLo + (refineHi - refineLo) / 3;
+          const t2 = refineLo + 2 * (refineHi - refineLo) / 3;
+          const p1 = shapeClone.getPointAtLength(t1);
+          const p2 = shapeClone.getPointAtLength(t2);
+          const d1 = (p1.x - target.x) ** 2 + (p1.y - target.y) ** 2;
+          const d2 = (p2.x - target.x) ** 2 + (p2.y - target.y) ** 2;
+          if (d1 < d2) refineHi = t2; else refineLo = t1;
+        }
+        bestT = (refineLo + refineHi) / 2;
+
+        // Only add if it advances along the path (avoid duplicates)
+        if (bestT > searchStart + 0.01) {
+          lengths.push(bestT);
+          searchStart = bestT;
+        }
+      }
+
+      return lengths;
     }
 
     // Wandelt Punkte in G-Code um mit Achsen-Mapping:
@@ -676,11 +897,11 @@ G92 X0 Y0 Z0</textarea>
       }
 
       try {
-        const sampleCount = Number($("samples").value || 400);
+        const tolerance = Math.max(0.001, Number($("tolerance").value || 0.05));
         const feed = Number($("feed").value || 800);
         const decimals = Math.max(0, Math.min(6, Number($("decimals").value || 3)));
 
-        const points = samplePath(parsedShape, sampleCount);
+        const points = sampleShape(parsedShape, tolerance);
         const gcode = pointsToGcode(points, {
           feed,
           decimals,
@@ -694,7 +915,7 @@ G92 X0 Y0 Z0</textarea>
         $("copyBtn").disabled = false;
         $("ncviewerBtn").disabled = false;
 
-        setStatus(`G-Code erzeugt: ${points.length} Punkte (${sampleCount} Segmente).`);
+        setStatus(`G-Code generated: ${points.length} points (tolerance ${tolerance} mm).`);
       } catch (err) {
         resetOutput();
         setStatus("Error generating G‑Code: " + err.message, true);
