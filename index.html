@@ -341,16 +341,25 @@ G92 X0 Y0 Z0</textarea>
 
       const ns = "http://www.w3.org/2000/svg";
       const svg = document.createElementNS(ns, "svg");
-      if (vb) {
-        svg.setAttribute("viewBox", vb);
-      } else {
-        // Fallback ohne viewBox
-        svg.setAttribute("viewBox", "0 0 200 200");
-      }
+      // Use a fixed viewBox for consistent coordinate system
+      const viewBox = vb ? vb : "0 0 200 200";
+      svg.setAttribute("viewBox", viewBox);
       svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
 
+      // Get bounding box of the path in its own coordinate system
+      const bbox = pathEl.getBBox();
+      const centerX = bbox.x + bbox.width / 2;
+      const centerY = bbox.y + bbox.height / 2;
+      // Target center of viewBox
+      const [vbX, vbY, vbWidth, vbHeight] = viewBox.split(/\s+/).map(Number);
+      const targetX = vbX + vbWidth / 2;
+      const targetY = vbY + vbHeight / 2;
+      // Translation to center path
+      const tx = targetX - centerX;
+      const ty = targetY - centerY;
+
       const g = document.createElementNS(ns, "g");
-      g.setAttribute("transform", "scale(1,1)");
+      g.setAttribute("transform", `translate(${tx},${ty})`);
 
       const path = document.createElementNS(ns, "path");
       path.setAttribute("d", d);
@@ -368,11 +377,13 @@ G92 X0 Y0 Z0</textarea>
     // Adds labeled coordinate arrows for CNC axes based on current mapping
     function addAxisArrows(svg, pathEl) {
       const ns = "http://www.w3.org/2000/svg";
-      const bbox = pathEl.getBBox();
-      // Place origin at lower‑left corner of bbox with some margin
-      const margin = 10;
-      const originX = bbox.x + margin;
-      const originY = bbox.y + bbox.height - margin;
+      // Determine viewBox dimensions
+      const viewBox = svg.getAttribute("viewBox");
+      const [vbX, vbY, vbWidth, vbHeight] = viewBox ? viewBox.split(/\s+/).map(Number) : [0, 0, 200, 200];
+      // Place origin at bottom‑left corner of viewBox with margin
+      const margin = Math.max(vbWidth, vbHeight) * 0.05;
+      const originX = vbX + margin;
+      const originY = vbY + vbHeight - margin;
 
       // Determine mapping and invert settings
       const map = {
@@ -395,16 +406,20 @@ G92 X0 Y0 Z0</textarea>
         let dx = 0, dy = 0;
         // Find which SVG axis maps to this CNC axis
         if (map.x === axis.name) {
+          // SVG X maps to this CNC axis
           dx = mirror.x ? -1 : 1;
+          dy = 0;
         }
         if (map.y === axis.name) {
-          dy = mirror.y ? -1 : 1;
+          // SVG Y maps to this CNC axis
+          dx = 0;
+          dy = mirror.y ? -1 : 1; // SVG Y points down, invert flips direction
         }
         // If this CNC axis is not mapped, skip
         if (dx === 0 && dy === 0) return;
 
-        // Scale vector to arrow length
-        const length = 40;
+        // Scale vector to arrow length (relative to viewBox size)
+        const length = Math.max(vbWidth, vbHeight) * 0.15;
         const endX = originX + dx * length;
         const endY = originY + dy * length;
 
