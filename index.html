@@ -375,14 +375,76 @@ G92 X0 Y0 Z0</textarea>
       // Bake in transform attribute if present
       const transform = clone.getAttribute("transform");
       if (transform && d) {
+        // Strategy: put the path with its d inside a <g transform="...">,
+        // then use the browser's own SVG rendering to get the real transformed points.
+        const g = document.createElementNS(ns, "g");
+        g.setAttribute("transform", transform);
         const pathTmp = document.createElementNS(ns, "path");
         pathTmp.setAttribute("d", d);
-        pathTmp.setAttribute("transform", transform);
-        tmpSvg.appendChild(pathTmp);
-        // Use the browser to resolve: sample many points in transformed space
-        // Then rebuild d from the transformed coordinates
-        d = bakeTransformIntoD(pathTmp);
-        tmpSvg.removeChild(pathTmp);
+        g.appendChild(pathTmp);
+        tmpSvg.appendChild(g);
+
+        // getPointAtLength returns local coords, but we need transformed coords.
+        // Use the SVG's createSVGPoint + getCTM to transform them.
+        const total = pathTmp.getTotalLength();
+        const ctm = pathTmp.getCTM();
+        const svgRoot = pathTmp.ownerSVGElement;
+
+        // Extract anchors from the untransformed d
+        const fakeEl = { tagName: "path", getAttribute: (a) => a === "d" ? d : null };
+        const anchors = extractAnchors(fakeEl);
+
+        if (anchors.length >= 2) {
+          // Transform anchor coords through CTM, then build adaptive path
+          const transformPt = (px, py) => {
+            const pt = svgRoot.createSVGPoint();
+            pt.x = px; pt.y = py;
+            const tp = pt.matrixTransform(ctm);
+            return { x: tp.x, y: tp.y };
+          };
+
+          // Map anchors to arc-length on the untransformed path
+          const anchorLens = mapAnchorsToLength(anchors, pathTmp, total);
+          if (anchorLens[0] > 0.001) anchorLens.unshift(0);
+          if (total - anchorLens[anchorLens.length - 1] > 0.001) anchorLens.push(total);
+
+          // Adaptive subdivision, transforming each sampled point through CTM
+          const ptAt = (t) => {
+            const p = pathTmp.getPointAtLength(t);
+            return transformPt(p.x, p.y);
+          };
+          const tolSq = 0.01 * 0.01;
+          const pts = [ptAt(anchorLens[0])];
+          for (let k = 1; k < anchorLens.length; k++) {
+            subdivide(anchorLens[k - 1], anchorLens[k], ptAt, tolSq, 14, pts);
+          }
+
+          d = `M${pts[0].x},${pts[0].y}`;
+          for (let k = 1; k < pts.length; k++) {
+            d += `L${pts[k].x},${pts[k].y}`;
+          }
+          if (/[Zz]\s*$/.test(d) || ["rect", "circle", "ellipse", "polygon"].includes(tag)) {
+            d += "Z";
+          }
+        } else {
+          // Fallback: dense uniform sampling with transform
+          const n = Math.max(100, Math.ceil(total / 0.5));
+          const transformPt = (px, py) => {
+            const pt = svgRoot.createSVGPoint();
+            pt.x = px; pt.y = py;
+            const tp = pt.matrixTransform(ctm);
+            return { x: tp.x, y: tp.y };
+          };
+          d = "";
+          for (let k = 0; k <= n; k++) {
+            const p = pathTmp.getPointAtLength((k / n) * total);
+            const tp = transformPt(p.x, p.y);
+            d += (k === 0 ? "M" : "L") + `${tp.x},${tp.y}`;
+          }
+          if (["rect", "circle", "ellipse", "polygon"].includes(tag)) d += "Z";
+        }
+
+        tmpSvg.removeChild(g);
       }
 
       document.body.removeChild(tmpSvg);
@@ -406,126 +468,7 @@ G92 X0 Y0 Z0</textarea>
     // and rebuilding the d string from straight line segments between anchor points.
     // For the initial G0 travel optimization to work well, we extract the transformed
     // positions of the original anchors and connect them with line segments.
-    function bakeTransformIntoD(pathEl) {
-      // Get the CTM (current transformation matrix) applied to this element
-      let ctm;
-      try { ctm = pathEl.getCTM(); } catch (e) { ctm = null; }
 
-      const origD = pathEl.getAttribute("d") || "";
-      if (!ctm) return origD;
-
-      // Parse anchors from the untransformed d
-      const tmpPathEl = { tagName: "path", getAttribute: (a) => a === "d" ? origD : null };
-      // We can reuse extractAnchors since it only needs getAttribute("d")
-      const anchors = extractAnchors(tmpPathEl);
-      if (anchors.length < 2) {
-        // Fallback: dense sampling
-        const total = pathEl.getTotalLength();
-        const n = Math.max(100, Math.ceil(total / 0.5));
-        let d = "";
-        for (let i = 0; i <= n; i++) {
-          const p = pathEl.getPointAtLength((i / n) * total);
-          // getPointAtLength on a transformed element returns transformed coords
-          d += (i === 0 ? "M" : "L") + `${p.x},${p.y}`;
-        }
-        // Check if closed
-        if (origD.match(/[Zz]\s*$/)) d += "Z";
-        return d;
-      }
-
-      // Transform each anchor through the CTM
-      const svg = pathEl.ownerSVGElement;
-      const transformed = anchors.map(a => {
-        const pt = svg.createSVGPoint();
-        pt.x = a.x; pt.y = a.y;
-        const tp = pt.matrixTransform(ctm);
-        return { x: tp.x, y: tp.y };
-      });
-
-      // But anchors connected by curves need intermediate points.
-      // Strategy: map anchors to arc-length, then adaptively sample each segment
-      // using the transformed getPointAtLength.
-      const total = pathEl.getTotalLength();
-      const anchorLengths = mapAnchorsToLengthOnEl(anchors, pathEl, total);
-
-      // Ensure start and end
-      if (anchorLengths[0] > 0.001) anchorLengths.unshift(0);
-      if (total - anchorLengths[anchorLengths.length - 1] > 0.001) anchorLengths.push(total);
-
-      const tolSq = 0.01 * 0.01; // tight tolerance for transform baking
-      const pts = [ptFromEl(pathEl, anchorLengths[0])];
-      for (let i = 1; i < anchorLengths.length; i++) {
-        subdivideEl(anchorLengths[i - 1], anchorLengths[i], pathEl, tolSq, 14, pts);
-      }
-
-      let d = `M${pts[0].x},${pts[0].y}`;
-      for (let i = 1; i < pts.length; i++) {
-        d += `L${pts[i].x},${pts[i].y}`;
-      }
-      if (origD.match(/[Zz]\s*$/)) d += "Z";
-      return d;
-    }
-
-    function ptFromEl(el, t) {
-      const p = el.getPointAtLength(t);
-      return { x: p.x, y: p.y };
-    }
-
-    function subdivideEl(tA, tB, el, tolSq, depth, out) {
-      if (depth <= 0 || (tB - tA) < 0.001) {
-        out.push(ptFromEl(el, tB));
-        return;
-      }
-      const tMid = (tA + tB) / 2;
-      const pA = out[out.length - 1];
-      const pB = ptFromEl(el, tB);
-      const pMid = ptFromEl(el, tMid);
-      const mx = (pA.x + pB.x) / 2;
-      const my = (pA.y + pB.y) / 2;
-      const dSq = (pMid.x - mx) * (pMid.x - mx) + (pMid.y - my) * (pMid.y - my);
-      if (dSq > tolSq) {
-        subdivideEl(tA, tMid, el, tolSq, depth - 1, out);
-        subdivideEl(tMid, tB, el, tolSq, depth - 1, out);
-      } else {
-        out.push(pB);
-      }
-    }
-
-    function mapAnchorsToLengthOnEl(anchors, el, totalLen) {
-      const lengths = [0];
-      let searchStart = 0;
-      for (let a = 1; a < anchors.length; a++) {
-        const target = anchors[a];
-        let lo = searchStart;
-        let hi = totalLen;
-        const steps = 200;
-        const span = hi - lo;
-        let bestT = lo, bestDist = Infinity;
-        for (let s = 0; s <= steps; s++) {
-          const t = lo + (s / steps) * span;
-          const p = el.getPointAtLength(t);
-          const d = (p.x - target.x) ** 2 + (p.y - target.y) ** 2;
-          if (d < bestDist) { bestDist = d; bestT = t; }
-        }
-        let refineLo = Math.max(lo, bestT - span / steps);
-        let refineHi = Math.min(hi, bestT + span / steps);
-        for (let r = 0; r < 15; r++) {
-          const t1 = refineLo + (refineHi - refineLo) / 3;
-          const t2 = refineLo + 2 * (refineHi - refineLo) / 3;
-          const p1 = el.getPointAtLength(t1);
-          const p2 = el.getPointAtLength(t2);
-          const d1 = (p1.x - target.x) ** 2 + (p1.y - target.y) ** 2;
-          const d2 = (p2.x - target.x) ** 2 + (p2.y - target.y) ** 2;
-          if (d1 < d2) refineHi = t2; else refineLo = t1;
-        }
-        const bestFinal = (refineLo + refineHi) / 2;
-        if (bestFinal > searchStart + 0.01) {
-          lengths.push(bestFinal);
-          searchStart = bestFinal;
-        }
-      }
-      return lengths;
-    }
 
     // Validates: exactly one shape element in the SVG.
     function validateSvgSingleShape(svgString) {
