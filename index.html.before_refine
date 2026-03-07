@@ -113,20 +113,19 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>SVG → G‑Code Converter (axis mapping: X→Y, Y→Z)</h1>
+    <h1>SVG → G-Code Konverter (Achsen-Mapping: X→Y, Y→Z)</h1>
 
     <div class="grid">
       <section class="card">
         <div class="row">
-          <label for="svgFile">SVG file</label>
+          <label for="svgFile">SVG-Datei</label>
           <input id="svgFile" type="file" accept=".svg,image/svg+xml" />
-          <div id="uploadStatus" class="status" style="margin-top:0.5rem;"></div>
         </div>
 
         <div class="row">
-          <label for="samples">Sampling points along path (more = finer segmentation)</label>
+          <label for="samples">Sampling-Punkte entlang des Pfads (mehr = feinere Segmentierung)</label>
           <input id="samples" type="number" min="10" step="10" value="400" />
-          <div class="hint">Arcs/circles in the path are output as line segments.</div>
+          <div class="hint">Bögen/Kreise im Path werden als Liniensegmente ausgegeben.</div>
         </div>
 
         <div class="row inline">
@@ -135,20 +134,21 @@
             <input id="feed" type="number" min="1" value="800" />
           </div>
           <div>
-            <label for="decimals">Decimals</label>
+            <label for="decimals">Dezimalstellen</label>
             <input id="decimals" type="number" min="0" max="6" value="3" />
           </div>
         </div>
 
         <div class="row">
-          <h3 style="margin-top:0; margin-bottom:1rem;">Axis Mapping</h3>
-          <div class="hint">Map SVG axes to CNC axes. For each axis you can enable “invert”.</div>
+          <h3 style="margin-top:0; margin-bottom:1rem;">Achsen‑Mapping</h3>
+          <div class="hint">SVG‑Achsen auf CNC‑Achsen abbilden. Für jede Achse kann „Spiegeln+verschieben“ aktiviert werden.</div>
         </div>
 
         <div class="row inline" style="gap:1rem;">
           <div style="flex:1;">
             <label for="mapX">SVG X →</label>
             <select id="mapX">
+              <option value="">–</option>
               <option value="X">CNC X</option>
               <option value="Y" selected>CNC Y</option>
               <option value="Z">CNC Z</option>
@@ -156,7 +156,7 @@
           </div>
           <div style="flex:1; display:flex; align-items:center; gap:0.5rem;">
             <input id="mirrorX" type="checkbox" />
-            <label for="mirrorX" style="margin:0; white-space:nowrap;">invert</label>
+            <label for="mirrorX" style="margin:0; white-space:nowrap;">Spiegeln+verschieben</label>
           </div>
         </div>
 
@@ -164,6 +164,7 @@
           <div style="flex:1;">
             <label for="mapY">SVG Y →</label>
             <select id="mapY">
+              <option value="">–</option>
               <option value="X">CNC X</option>
               <option value="Y">CNC Y</option>
               <option value="Z" selected>CNC Z</option>
@@ -171,24 +172,40 @@
           </div>
           <div style="flex:1; display:flex; align-items:center; gap:0.5rem;">
             <input id="mirrorY" type="checkbox" checked />
-            <label for="mirrorY" style="margin:0; white-space:nowrap;">invert</label>
+            <label for="mirrorY" style="margin:0; white-space:nowrap;">Spiegeln+verschieben</label>
+          </div>
+        </div>
+
+        <div class="row inline" style="gap:1rem;">
+          <div style="flex:1;">
+            <label for="mapZ">SVG Z →</label>
+            <select id="mapZ">
+              <option value="" selected>–</option>
+              <option value="X">CNC X</option>
+              <option value="Y">CNC Y</option>
+              <option value="Z">CNC Z</option>
+            </select>
+          </div>
+          <div style="flex:1; display:flex; align-items:center; gap:0.5rem;">
+            <input id="mirrorZ" type="checkbox" />
+            <label for="mirrorZ" style="margin:0; white-space:nowrap;">Spiegeln+verschieben</label>
           </div>
         </div>
 
         <div class="row">
-          <label for="header">G‑Code header (optional, one command per line)</label>
+          <label for="header">G-Code Header (optional, pro Zeile ein Befehl)</label>
           <textarea id="header" rows="4">G21
 G90
 G92 X0 Y0 Z0</textarea>
         </div>
 
         <div class="row">
-          <label for="footer">G‑Code footer (optional)</label>
+          <label for="footer">G-Code Footer (optional)</label>
           <textarea id="footer" rows="3">M2</textarea>
         </div>
 
         <div class="row inline">
-          <button id="generateBtn" disabled>Generate G‑Code</button>
+          <button id="generateBtn" disabled>G-Code generieren</button>
           <select id="ext">
             <option value="gcode">.gcode</option>
             <option value="nc">.nc</option>
@@ -202,11 +219,11 @@ G92 X0 Y0 Z0</textarea>
 
       <section class="card">
         <div class="row">
-          <label>SVG preview (only with valid file)</label>
-          <div id="preview"><span class="hint">No file loaded yet</span></div>
+          <label>SVG-Vorschau (nur bei gültiger Datei)</label>
+          <div id="preview"><span class="hint">Noch keine Datei geladen</span></div>
         </div>
         <div class="row">
-          <label>Generated G‑Code</label>
+          <label>Generierter G-Code</label>
           <div style="position:relative;">
             <pre id="gcodeOut"></pre>
             <button id="copyBtn" style="position:absolute; top:8px; right:8px; width:auto; font-size:12px; padding:4px 8px;" disabled>Copy</button>
@@ -220,17 +237,10 @@ G92 X0 Y0 Z0</textarea>
     // --- Kleine Utility-Funktionen ---
     const $ = (id) => document.getElementById(id);
     const statusEl = $("status");
-    const uploadStatusEl = $("uploadStatus");
 
     function setStatus(msg, isError = false) {
       statusEl.textContent = msg || "";
       statusEl.className = "status " + (msg ? (isError ? "err" : "ok") : "");
-    }
-    function setUploadStatus(msg, isError = false) {
-      if (uploadStatusEl) {
-        uploadStatusEl.textContent = msg || "";
-        uploadStatusEl.className = "status " + (msg ? (isError ? "err" : "ok") : "");
-      }
     }
 
     function fmt(n, decimals) {
@@ -244,55 +254,7 @@ G92 X0 Y0 Z0</textarea>
         .filter(Boolean);
     }
 
-    // --- Cookie storage for axis mapping ---
-    const COOKIE_NAME = "svg2gcode_config";
-    const COOKIE_DAYS = 30;
-
-    function saveConfig() {
-      const config = {
-        mapX: $("mapX").value,
-        mapY: $("mapY").value,
-        mirrorX: $("mirrorX").checked,
-        mirrorY: $("mirrorY").checked
-      };
-      const expires = new Date(Date.now() + COOKIE_DAYS * 864e5).toUTCString();
-      document.cookie = `${COOKIE_NAME}=${encodeURIComponent(JSON.stringify(config))}; expires=${expires}; path=/`;
-    }
-
-    function loadConfig() {
-      const match = document.cookie.match(new RegExp(`(?:^|; )${COOKIE_NAME}=([^;]*)`));
-      if (!match) return false;
-      try {
-        const config = JSON.parse(decodeURIComponent(match[1]));
-        if (config.mapX && ["X","Y","Z"].includes(config.mapX)) $("mapX").value = config.mapX;
-        if (config.mapY && ["X","Y","Z"].includes(config.mapY)) $("mapY").value = config.mapY;
-        if (typeof config.mirrorX === "boolean") $("mirrorX").checked = config.mirrorX;
-        if (typeof config.mirrorY === "boolean") $("mirrorY").checked = config.mirrorY;
-        return true;
-      } catch (e) {
-        console.warn("Failed to parse cookie", e);
-        return false;
-      }
-    }
-
-    
-    // Refresh the preview if a path is already loaded
-    function refreshPreviewIfLoaded() {
-      if (parsedPath) {
-        renderPreview(parsedPath);
-      }
-    }
-// Load config and attach change listeners on page load
-    document.addEventListener("DOMContentLoaded", () => {
-      loadConfig();
-      [$("mapX"), $("mapY"), $("mirrorX"), $("mirrorY")].forEach(el => {
-        if (el) el.addEventListener("change", () => {
-          saveConfig();
-          refreshPreviewIfLoaded();
-        });
-      });
-    });
-// --- Zustand ---
+    // --- Zustand ---
     let svgText = "";
     let parsedPath = null; // SVGPathElement (aus DOMParser-Dokument)
     let lastGcode = "";
@@ -305,17 +267,17 @@ G92 X0 Y0 Z0</textarea>
 
       // Parserfehler erkennen
       if (doc.querySelector("parsererror")) {
-        return { ok: false, error: "Invalid SVG (parser error)." };
+        return { ok: false, error: "Ungültiges SVG (Parserfehler)." };
       }
 
       const svg = doc.documentElement;
       if (!svg || svg.tagName.toLowerCase() !== "svg") {
-        return { ok: false, error: "File does not contain an <svg> root element." };
+        return { ok: false, error: "Datei enthält kein <svg>-Root-Element." };
       }
 
       const paths = svg.querySelectorAll("path");
       if (paths.length !== 1) {
-        return { ok: false, error: `Expected exactly 1 <path>, found: ${paths.length}.` };
+        return { ok: false, error: `Erwartet genau 1 <path>, gefunden: ${paths.length}.` };
       }
 
       // Verbotene zusätzliche Shapes (laut Anforderung: nur ein Path, keine anderen Shapes)
@@ -324,7 +286,7 @@ G92 X0 Y0 Z0</textarea>
       if (others.length > 0) {
         return {
           ok: false,
-          error: `Not allowed: other shapes found (${others.length}). Only one <path> is allowed.`
+          error: `Nicht erlaubt: andere Shapes gefunden (${others.length}). Nur ein <path> ist erlaubt.`
         };
       }
 
@@ -332,141 +294,35 @@ G92 X0 Y0 Z0</textarea>
     }
 
     // Zeichnet eine sichere Vorschau: nur den validierten Path in ein eigenes SVG einsetzen.
-    // The viewBox is computed from the path's bounding box so the path is always centered.
     function renderPreview(pathEl) {
       const preview = $("preview");
       preview.innerHTML = "";
 
       const d = pathEl.getAttribute("d") || "";
+      const vb = pathEl.ownerSVGElement.getAttribute("viewBox");
 
       const ns = "http://www.w3.org/2000/svg";
       const svg = document.createElementNS(ns, "svg");
-
-      // Compute bounding box of the path in SVG user-space
-      const bbox = pathEl.getBBox();
-
-      // Add padding around the path (20% of largest dimension, min 20 units)
-      const maxDim = Math.max(bbox.width, bbox.height, 1);
-      const pad = Math.max(maxDim * 0.25, 20);
-
-      // Build a viewBox that tightly fits the path + padding
-      const vbX = bbox.x - pad;
-      const vbY = bbox.y - pad;
-      const vbW = bbox.width + pad * 2;
-      const vbH = bbox.height + pad * 2;
-
-      svg.setAttribute("viewBox", `${vbX} ${vbY} ${vbW} ${vbH}`);
+      if (vb) {
+        svg.setAttribute("viewBox", vb);
+      } else {
+        // Fallback ohne viewBox
+        svg.setAttribute("viewBox", "0 0 200 200");
+      }
       svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
 
-      // No transform needed — the viewBox itself centers on the path
+      const g = document.createElementNS(ns, "g");
+      g.setAttribute("transform", "scale(1,1)");
+
       const path = document.createElementNS(ns, "path");
       path.setAttribute("d", d);
       path.setAttribute("fill", "none");
       path.setAttribute("stroke", "#60a5fa");
-      path.setAttribute("stroke-width", String(Math.max(maxDim * 0.005, 0.5)));
+      path.setAttribute("stroke-width", "1.5");
 
-      svg.appendChild(path);
+      g.appendChild(path);
+      svg.appendChild(g);
       preview.appendChild(svg);
-      addAxisArrows(svg, pathEl);
-    }
-
-    
-    // Adds labeled coordinate arrows at the CNC zero-point position.
-    // The CNC zero-point is where CNC coordinates are minimal (0,0,0).
-    // We compute the SVG-space position that maps to CNC zero, given
-    // the axis mapping and invert/offset logic in pointsToGcode().
-    function addAxisArrows(svg, pathEl) {
-      const ns = "http://www.w3.org/2000/svg";
-
-      const viewBox = svg.getAttribute("viewBox");
-      const [vbX, vbY, vbW, vbH] = viewBox ? viewBox.split(/\s+/).map(Number) : [0, 0, 200, 200];
-
-      const map = { x: $("mapX").value, y: $("mapY").value };
-      const mirror = { x: $("mirrorX").checked, y: $("mirrorY").checked };
-
-      // Path bounding box in SVG user-space
-      const bbox = pathEl.getBBox();
-
-      // --- Compute CNC zero-point in SVG coordinates ---
-      // The G-Code mapper does:
-      //   if invert: val = -svgVal + svgMax   → CNC 0 is at svgMax
-      //   else:      val = svgVal              → CNC 0 is at svg 0 (but clamped to bbox.min for display)
-      //
-      // For display we place the origin at the bbox edge where CNC=0:
-      //   SVG X: invert → bbox.x + bbox.width (right edge);  normal → bbox.x (left edge)
-      //   SVG Y: invert → bbox.y + bbox.height (bottom edge); normal → bbox.y (top edge)
-
-      const originSvgX = mirror.x ? (bbox.x + bbox.width) : bbox.x;
-      const originSvgY = mirror.y ? (bbox.y + bbox.height) : bbox.y;
-
-      // --- Arrow directions in SVG space ---
-      // "Positive CNC direction" means increasing CNC value.
-      // SVG X axis: normal → +X; invert → -X (because invert reverses the mapping)
-      // SVG Y axis: normal → +Y (down in SVG); invert → -Y (up in SVG)
-      const svgXdir = mirror.x ? -1 : 1;
-      const svgYdir = mirror.y ? -1 : 1;
-
-      const axes = [
-        { name: "X", color: "#ef4444" },
-        { name: "Y", color: "#10b981" },
-        { name: "Z", color: "#3b82f6" }
-      ];
-
-      const arrowLen = Math.max(vbW, vbH) * 0.12;
-      const strokeW = Math.max(Math.max(vbW, vbH) * 0.006, 0.5);
-      const fontSize = Math.max(Math.max(vbW, vbH) * 0.04, 6);
-
-      // Ensure arrowhead marker exists
-      if (!svg.querySelector("marker#arrowhead")) {
-        const defs = document.createElementNS(ns, "defs");
-        const marker = document.createElementNS(ns, "marker");
-        marker.setAttribute("id", "arrowhead");
-        marker.setAttribute("viewBox", "0 0 10 10");
-        marker.setAttribute("refX", "9");
-        marker.setAttribute("refY", "5");
-        marker.setAttribute("markerWidth", "6");
-        marker.setAttribute("markerHeight", "6");
-        marker.setAttribute("orient", "auto");
-        const mp = document.createElementNS(ns, "path");
-        mp.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
-        mp.setAttribute("fill", "#999");
-        marker.appendChild(mp);
-        defs.appendChild(marker);
-        svg.appendChild(defs);
-      }
-
-      axes.forEach(axis => {
-        let dx = 0, dy = 0;
-        // Which SVG axis feeds this CNC axis?
-        if (map.x === axis.name) { dx = svgXdir; }
-        if (map.y === axis.name) { dy = svgYdir; }
-        if (dx === 0 && dy === 0) return; // unmapped axis
-
-        const endX = originSvgX + dx * arrowLen;
-        const endY = originSvgY + dy * arrowLen;
-
-        const line = document.createElementNS(ns, "line");
-        line.setAttribute("x1", originSvgX);
-        line.setAttribute("y1", originSvgY);
-        line.setAttribute("x2", endX);
-        line.setAttribute("y2", endY);
-        line.setAttribute("stroke", axis.color);
-        line.setAttribute("stroke-width", String(strokeW));
-        line.setAttribute("marker-end", "url(#arrowhead)");
-        svg.appendChild(line);
-
-        const label = document.createElementNS(ns, "text");
-        const labelOff = fontSize * 0.4;
-        label.setAttribute("x", String(endX + dx * labelOff));
-        label.setAttribute("y", String(endY + dy * labelOff));
-        label.setAttribute("fill", axis.color);
-        label.setAttribute("font-size", String(fontSize));
-        label.setAttribute("font-weight", "bold");
-        label.setAttribute("text-anchor", dx > 0 ? "start" : (dx < 0 ? "end" : "middle"));
-        label.setAttribute("dominant-baseline", dy > 0 ? "hanging" : (dy < 0 ? "auto" : "central"));
-        label.textContent = axis.name;
-        svg.appendChild(label);
-      });
     }
 
     // Erzeugt Stützpunkte entlang des gesamten Pathes.
@@ -497,16 +353,18 @@ G92 X0 Y0 Z0</textarea>
       // Collect axis mapping
       const map = {
         x: $("mapX").value,
-        y: $("mapY").value
+        y: $("mapY").value,
+        z: $("mapZ").value || null
       };
       const mirror = {
         x: $("mirrorX").checked,
-        y: $("mirrorY").checked
+        y: $("mirrorY").checked,
+        z: $("mirrorZ").checked
       };
 
       // Determine bounding box for mirror offsets
       let bbox = null;
-      if (mirror.x || mirror.y) {
+      if (mirror.x || mirror.y || mirror.z) {
         // Compute min/max of points (we assume SVG coordinates)
         bbox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
         for (const p of points) {
@@ -519,13 +377,14 @@ G92 X0 Y0 Z0</textarea>
 
       const out = [];
       out.push("; Generated by SVG->GCode (generic mapping)");
-      out.push(`; Mapping: SVG X→${map.x || "-"}, Y→${map.y || "-"}`);
-      if (mirror.x) out.push("; X inverted");
-      if (mirror.y) out.push("; Y inverted");
+      out.push(`; Mapping: SVG X→${map.x || "-"}, Y→${map.y || "-"}, Z→${map.z || "-"}`);
+      if (mirror.x) out.push("; X mirrored+shifted");
+      if (mirror.y) out.push("; Y mirrored+shifted");
+      if (mirror.z) out.push("; Z mirrored+shifted");
       out.push(...headerLines);
 
       if (!points.length) {
-        throw new Error("No points to convert.");
+        throw new Error("Keine Punkte zum Konvertieren vorhanden.");
       }
 
       // Helper to map a point to CNC axes
@@ -542,6 +401,12 @@ G92 X0 Y0 Z0</textarea>
           let val = p.y;
           if (mirror.y && bbox) val = -val + bbox.maxY;
           cnc[map.y] = (cnc[map.y] || 0) + val;
+        }
+        // SVG Z (always 0 for 2D) → mapped axis
+        if (map.z) {
+          let val = 0;
+          if (mirror.z && bbox) val = -val + (bbox.maxZ || 0); // maxZ not defined, ignore
+          cnc[map.z] = (cnc[map.z] || 0) + val;
         }
         return cnc;
       }
@@ -581,25 +446,25 @@ G92 X0 Y0 Z0</textarea>
         const res = validateSvgStrictOnePath(svgText);
         if (!res.ok) {
           $("generateBtn").disabled = true;
-          $("preview").innerHTML = `<span class="hint">No preview</span>`;
-          setUploadStatus(res.error, true);
+          $("preview").innerHTML = `<span class="hint">Keine Vorschau</span>`;
+          setStatus(res.error, true);
           return;
         }
 
         parsedPath = res.path;
         renderPreview(parsedPath);
         $("generateBtn").disabled = false;
-        setUploadStatus("SVG is valid: exactly one <path>, no other shapes.");
+        setStatus("SVG ist gültig: genau ein <path>, keine anderen Shapes.");
       } catch (err) {
         $("generateBtn").disabled = true;
-        $("preview").innerHTML = `<span class="hint">No preview</span>`;
-        setUploadStatus("Error reading/validating: " + err.message, true);
+        $("preview").innerHTML = `<span class="hint">Keine Vorschau</span>`;
+        setStatus("Fehler beim Lesen/Validieren: " + err.message, true);
       }
     });
 
     $("generateBtn").addEventListener("click", () => {
       if (!parsedPath) {
-        setStatus("Please load a valid SVG first.", true);
+        setStatus("Bitte zuerst eine gültige SVG laden.", true);
         return;
       }
 
@@ -625,7 +490,7 @@ G92 X0 Y0 Z0</textarea>
         setStatus(`G-Code erzeugt: ${points.length} Punkte (${sampleCount} Segmente).`);
       } catch (err) {
         resetOutput();
-        setStatus("Error generating G‑Code: " + err.message, true);
+        setStatus("Fehler bei der G-Code-Generierung: " + err.message, true);
       }
     });
 
@@ -651,9 +516,9 @@ G92 X0 Y0 Z0</textarea>
         const old = btn.textContent;
         btn.textContent = "Copied!";
         setTimeout(() => (btn.textContent = old), 1200);
-        setStatus("G‑Code copied to clipboard.");
+        setStatus("G-Code in Zwischenablage kopiert.");
       } catch (err) {
-        setStatus("Copy failed: " + (err?.message || err), true);
+        setStatus("Copy fehlgeschlagen: " + (err?.message || err), true);
       }
     });
 
@@ -661,9 +526,9 @@ G92 X0 Y0 Z0</textarea>
       if (!lastGcode) return;
       try {
         await navigator.clipboard.writeText(lastGcode);
-        setStatus("NCViewer opened. G‑Code is in clipboard.");
+        setStatus("NCViewer geöffnet. G-Code ist in der Zwischenablage.");
       } catch (_) {
-        setStatus("NCViewer opened. If needed, copy G‑Code manually.");
+        setStatus("NCViewer geöffnet. Falls nötig: G-Code per Copy kopieren.");
       }
       window.open("https://ncviewer.com/", "_blank", "noopener,noreferrer");
     });

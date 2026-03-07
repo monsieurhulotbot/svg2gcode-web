@@ -332,91 +332,122 @@ G92 X0 Y0 Z0</textarea>
     }
 
     // Zeichnet eine sichere Vorschau: nur den validierten Path in ein eigenes SVG einsetzen.
-    // The viewBox is computed from the path's bounding box so the path is always centered.
     function renderPreview(pathEl) {
       const preview = $("preview");
       preview.innerHTML = "";
 
       const d = pathEl.getAttribute("d") || "";
+      const vb = pathEl.ownerSVGElement.getAttribute("viewBox");
 
       const ns = "http://www.w3.org/2000/svg";
       const svg = document.createElementNS(ns, "svg");
-
-      // Compute bounding box of the path in SVG user-space
-      const bbox = pathEl.getBBox();
-
-      // Add padding around the path (20% of largest dimension, min 20 units)
-      const maxDim = Math.max(bbox.width, bbox.height, 1);
-      const pad = Math.max(maxDim * 0.25, 20);
-
-      // Build a viewBox that tightly fits the path + padding
-      const vbX = bbox.x - pad;
-      const vbY = bbox.y - pad;
-      const vbW = bbox.width + pad * 2;
-      const vbH = bbox.height + pad * 2;
-
-      svg.setAttribute("viewBox", `${vbX} ${vbY} ${vbW} ${vbH}`);
+      // Use a fixed viewBox for consistent coordinate system
+      const viewBox = vb ? vb : "0 0 200 200";
+      svg.setAttribute("viewBox", viewBox);
       svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
 
-      // No transform needed — the viewBox itself centers on the path
+      // Get bounding box of the path in its own coordinate system
+      const bbox = pathEl.getBBox();
+      const centerX = bbox.x + bbox.width / 2;
+      const centerY = bbox.y + bbox.height / 2;
+      // Target center of viewBox
+      const [vbX, vbY, vbWidth, vbHeight] = viewBox.split(/\s+/).map(Number);
+      const targetX = vbX + vbWidth / 2;
+      const targetY = vbY + vbHeight / 2;
+      // Translation to center path
+      const tx = targetX - centerX;
+      const ty = targetY - centerY;
+
+      const g = document.createElementNS(ns, "g");
+      g.setAttribute("transform", `translate(${tx},${ty})`);
+
       const path = document.createElementNS(ns, "path");
       path.setAttribute("d", d);
       path.setAttribute("fill", "none");
       path.setAttribute("stroke", "#60a5fa");
-      path.setAttribute("stroke-width", String(Math.max(maxDim * 0.005, 0.5)));
+      path.setAttribute("stroke-width", "1.5");
 
-      svg.appendChild(path);
+      g.appendChild(path);
+      svg.appendChild(g);
       preview.appendChild(svg);
       addAxisArrows(svg, pathEl);
     }
 
     
-    // Adds labeled coordinate arrows at the CNC zero-point position.
-    // The CNC zero-point is where CNC coordinates are minimal (0,0,0).
-    // We compute the SVG-space position that maps to CNC zero, given
-    // the axis mapping and invert/offset logic in pointsToGcode().
+    // Adds labeled coordinate arrows for CNC axes based on current mapping
     function addAxisArrows(svg, pathEl) {
       const ns = "http://www.w3.org/2000/svg";
-
+      // Determine viewBox dimensions
       const viewBox = svg.getAttribute("viewBox");
-      const [vbX, vbY, vbW, vbH] = viewBox ? viewBox.split(/\s+/).map(Number) : [0, 0, 200, 200];
+      const [vbX, vbY, vbWidth, vbHeight] = viewBox ? viewBox.split(/\s+/).map(Number) : [0, 0, 200, 200];
+      // Place origin at bottom‑left corner of viewBox with margin
+      const margin = Math.max(vbWidth, vbHeight) * 0.05;
+      const originX = vbX + margin;
+      const originY = vbY + vbHeight - margin;
 
-      const map = { x: $("mapX").value, y: $("mapY").value };
-      const mirror = { x: $("mirrorX").checked, y: $("mirrorY").checked };
+      // Determine mapping and invert settings
+      const map = {
+        x: $("mapX").value,
+        y: $("mapY").value
+      };
+      const mirror = {
+        x: $("mirrorX").checked,
+        y: $("mirrorY").checked
+      };
 
-      // Path bounding box in SVG user-space
-      const bbox = pathEl.getBBox();
-
-      // --- Compute CNC zero-point in SVG coordinates ---
-      // The G-Code mapper does:
-      //   if invert: val = -svgVal + svgMax   → CNC 0 is at svgMax
-      //   else:      val = svgVal              → CNC 0 is at svg 0 (but clamped to bbox.min for display)
-      //
-      // For display we place the origin at the bbox edge where CNC=0:
-      //   SVG X: invert → bbox.x + bbox.width (right edge);  normal → bbox.x (left edge)
-      //   SVG Y: invert → bbox.y + bbox.height (bottom edge); normal → bbox.y (top edge)
-
-      const originSvgX = mirror.x ? (bbox.x + bbox.width) : bbox.x;
-      const originSvgY = mirror.y ? (bbox.y + bbox.height) : bbox.y;
-
-      // --- Arrow directions in SVG space ---
-      // "Positive CNC direction" means increasing CNC value.
-      // SVG X axis: normal → +X; invert → -X (because invert reverses the mapping)
-      // SVG Y axis: normal → +Y (down in SVG); invert → -Y (up in SVG)
-      const svgXdir = mirror.x ? -1 : 1;
-      const svgYdir = mirror.y ? -1 : 1;
-
+      // For each CNC axis (X, Y, Z) compute its 2D vector in SVG coordinates
       const axes = [
         { name: "X", color: "#ef4444" },
         { name: "Y", color: "#10b981" },
         { name: "Z", color: "#3b82f6" }
       ];
 
-      const arrowLen = Math.max(vbW, vbH) * 0.12;
-      const strokeW = Math.max(Math.max(vbW, vbH) * 0.006, 0.5);
-      const fontSize = Math.max(Math.max(vbW, vbH) * 0.04, 6);
+      axes.forEach(axis => {
+        let dx = 0, dy = 0;
+        // Find which SVG axis maps to this CNC axis
+        if (map.x === axis.name) {
+          // SVG X maps to this CNC axis
+          dx = mirror.x ? -1 : 1;
+          dy = 0;
+        }
+        if (map.y === axis.name) {
+          // SVG Y maps to this CNC axis
+          dx = 0;
+          dy = mirror.y ? -1 : 1; // SVG Y points down, invert flips direction
+        }
+        // If this CNC axis is not mapped, skip
+        if (dx === 0 && dy === 0) return;
 
-      // Ensure arrowhead marker exists
+        // Scale vector to arrow length (relative to viewBox size)
+        const length = Math.max(vbWidth, vbHeight) * 0.15;
+        const endX = originX + dx * length;
+        const endY = originY + dy * length;
+
+        // Draw arrow line
+        const line = document.createElementNS(ns, "line");
+        line.setAttribute("x1", originX);
+        line.setAttribute("y1", originY);
+        line.setAttribute("x2", endX);
+        line.setAttribute("y2", endY);
+        line.setAttribute("stroke", axis.color);
+        line.setAttribute("stroke-width", "2");
+        line.setAttribute("marker-end", "url(#arrowhead)");
+        svg.appendChild(line);
+
+        // Draw label
+        const label = document.createElementNS(ns, "text");
+        label.setAttribute("x", endX + dx * 5);
+        label.setAttribute("y", endY + dy * 5);
+        label.setAttribute("fill", axis.color);
+        label.setAttribute("font-size", "12");
+        label.setAttribute("font-weight", "bold");
+        label.setAttribute("text-anchor", dx > 0 ? "start" : (dx < 0 ? "end" : "middle"));
+        label.setAttribute("dy", dy > 0 ? "0.8em" : (dy < 0 ? "-0.2em" : "0"));
+        label.textContent = axis.name;
+        svg.appendChild(label);
+      });
+
+      // Define arrowhead marker if not already present
       if (!svg.querySelector("marker#arrowhead")) {
         const defs = document.createElementNS(ns, "defs");
         const marker = document.createElementNS(ns, "marker");
@@ -427,46 +458,13 @@ G92 X0 Y0 Z0</textarea>
         marker.setAttribute("markerWidth", "6");
         marker.setAttribute("markerHeight", "6");
         marker.setAttribute("orient", "auto");
-        const mp = document.createElementNS(ns, "path");
-        mp.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
-        mp.setAttribute("fill", "#999");
-        marker.appendChild(mp);
+        const path = document.createElementNS(ns, "path");
+        path.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+        path.setAttribute("fill", "#999");
+        marker.appendChild(path);
         defs.appendChild(marker);
         svg.appendChild(defs);
       }
-
-      axes.forEach(axis => {
-        let dx = 0, dy = 0;
-        // Which SVG axis feeds this CNC axis?
-        if (map.x === axis.name) { dx = svgXdir; }
-        if (map.y === axis.name) { dy = svgYdir; }
-        if (dx === 0 && dy === 0) return; // unmapped axis
-
-        const endX = originSvgX + dx * arrowLen;
-        const endY = originSvgY + dy * arrowLen;
-
-        const line = document.createElementNS(ns, "line");
-        line.setAttribute("x1", originSvgX);
-        line.setAttribute("y1", originSvgY);
-        line.setAttribute("x2", endX);
-        line.setAttribute("y2", endY);
-        line.setAttribute("stroke", axis.color);
-        line.setAttribute("stroke-width", String(strokeW));
-        line.setAttribute("marker-end", "url(#arrowhead)");
-        svg.appendChild(line);
-
-        const label = document.createElementNS(ns, "text");
-        const labelOff = fontSize * 0.4;
-        label.setAttribute("x", String(endX + dx * labelOff));
-        label.setAttribute("y", String(endY + dy * labelOff));
-        label.setAttribute("fill", axis.color);
-        label.setAttribute("font-size", String(fontSize));
-        label.setAttribute("font-weight", "bold");
-        label.setAttribute("text-anchor", dx > 0 ? "start" : (dx < 0 ? "end" : "middle"));
-        label.setAttribute("dominant-baseline", dy > 0 ? "hanging" : (dy < 0 ? "auto" : "central"));
-        label.textContent = axis.name;
-        svg.appendChild(label);
-      });
     }
 
     // Erzeugt Stützpunkte entlang des gesamten Pathes.
