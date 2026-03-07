@@ -113,19 +113,20 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>SVG → G-Code Konverter (Achsen-Mapping: X→Y, Y→Z)</h1>
+    <h1>SVG → G‑Code Converter (axis mapping: X→Y, Y→Z)</h1>
 
     <div class="grid">
       <section class="card">
         <div class="row">
-          <label for="svgFile">SVG-Datei</label>
+          <label for="svgFile">SVG file</label>
           <input id="svgFile" type="file" accept=".svg,image/svg+xml" />
+          <div id="uploadStatus" class="status" style="margin-top:0.5rem;"></div>
         </div>
 
         <div class="row">
-          <label for="samples">Sampling-Punkte entlang des Pfads (mehr = feinere Segmentierung)</label>
+          <label for="samples">Sampling points along path (more = finer segmentation)</label>
           <input id="samples" type="number" min="10" step="10" value="400" />
-          <div class="hint">Bögen/Kreise im Path werden als Liniensegmente ausgegeben.</div>
+          <div class="hint">Arcs/circles in the path are output as line segments.</div>
         </div>
 
         <div class="row inline">
@@ -134,21 +135,20 @@
             <input id="feed" type="number" min="1" value="800" />
           </div>
           <div>
-            <label for="decimals">Dezimalstellen</label>
+            <label for="decimals">Decimals</label>
             <input id="decimals" type="number" min="0" max="6" value="3" />
           </div>
         </div>
 
         <div class="row">
-          <h3 style="margin-top:0; margin-bottom:1rem;">Achsen‑Mapping</h3>
-          <div class="hint">SVG‑Achsen auf CNC‑Achsen abbilden. Für jede Achse kann „Spiegeln+verschieben“ aktiviert werden.</div>
+          <h3 style="margin-top:0; margin-bottom:1rem;">Axis Mapping</h3>
+          <div class="hint">Map SVG axes to CNC axes. For each axis you can enable “invert”.</div>
         </div>
 
         <div class="row inline" style="gap:1rem;">
           <div style="flex:1;">
             <label for="mapX">SVG X →</label>
             <select id="mapX">
-              <option value="">–</option>
               <option value="X">CNC X</option>
               <option value="Y" selected>CNC Y</option>
               <option value="Z">CNC Z</option>
@@ -156,7 +156,7 @@
           </div>
           <div style="flex:1; display:flex; align-items:center; gap:0.5rem;">
             <input id="mirrorX" type="checkbox" />
-            <label for="mirrorX" style="margin:0; white-space:nowrap;">Spiegeln+verschieben</label>
+            <label for="mirrorX" style="margin:0; white-space:nowrap;">invert</label>
           </div>
         </div>
 
@@ -164,7 +164,6 @@
           <div style="flex:1;">
             <label for="mapY">SVG Y →</label>
             <select id="mapY">
-              <option value="">–</option>
               <option value="X">CNC X</option>
               <option value="Y">CNC Y</option>
               <option value="Z" selected>CNC Z</option>
@@ -172,40 +171,24 @@
           </div>
           <div style="flex:1; display:flex; align-items:center; gap:0.5rem;">
             <input id="mirrorY" type="checkbox" checked />
-            <label for="mirrorY" style="margin:0; white-space:nowrap;">Spiegeln+verschieben</label>
-          </div>
-        </div>
-
-        <div class="row inline" style="gap:1rem;">
-          <div style="flex:1;">
-            <label for="mapZ">SVG Z →</label>
-            <select id="mapZ">
-              <option value="" selected>–</option>
-              <option value="X">CNC X</option>
-              <option value="Y">CNC Y</option>
-              <option value="Z">CNC Z</option>
-            </select>
-          </div>
-          <div style="flex:1; display:flex; align-items:center; gap:0.5rem;">
-            <input id="mirrorZ" type="checkbox" />
-            <label for="mirrorZ" style="margin:0; white-space:nowrap;">Spiegeln+verschieben</label>
+            <label for="mirrorY" style="margin:0; white-space:nowrap;">invert</label>
           </div>
         </div>
 
         <div class="row">
-          <label for="header">G-Code Header (optional, pro Zeile ein Befehl)</label>
+          <label for="header">G‑Code header (optional, one command per line)</label>
           <textarea id="header" rows="4">G21
 G90
 G92 X0 Y0 Z0</textarea>
         </div>
 
         <div class="row">
-          <label for="footer">G-Code Footer (optional)</label>
+          <label for="footer">G‑Code footer (optional)</label>
           <textarea id="footer" rows="3">M2</textarea>
         </div>
 
         <div class="row inline">
-          <button id="generateBtn" disabled>G-Code generieren</button>
+          <button id="generateBtn" disabled>Generate G‑Code</button>
           <select id="ext">
             <option value="gcode">.gcode</option>
             <option value="nc">.nc</option>
@@ -219,11 +202,11 @@ G92 X0 Y0 Z0</textarea>
 
       <section class="card">
         <div class="row">
-          <label>SVG-Vorschau (nur bei gültiger Datei)</label>
-          <div id="preview"><span class="hint">Noch keine Datei geladen</span></div>
+          <label>SVG preview (only with valid file)</label>
+          <div id="preview"><span class="hint">No file loaded yet</span></div>
         </div>
         <div class="row">
-          <label>Generierter G-Code</label>
+          <label>Generated G‑Code</label>
           <div style="position:relative;">
             <pre id="gcodeOut"></pre>
             <button id="copyBtn" style="position:absolute; top:8px; right:8px; width:auto; font-size:12px; padding:4px 8px;" disabled>Copy</button>
@@ -237,10 +220,17 @@ G92 X0 Y0 Z0</textarea>
     // --- Kleine Utility-Funktionen ---
     const $ = (id) => document.getElementById(id);
     const statusEl = $("status");
+    const uploadStatusEl = $("uploadStatus");
 
     function setStatus(msg, isError = false) {
       statusEl.textContent = msg || "";
       statusEl.className = "status " + (msg ? (isError ? "err" : "ok") : "");
+    }
+    function setUploadStatus(msg, isError = false) {
+      if (uploadStatusEl) {
+        uploadStatusEl.textContent = msg || "";
+        uploadStatusEl.className = "status " + (msg ? (isError ? "err" : "ok") : "");
+      }
     }
 
     function fmt(n, decimals) {
@@ -267,12 +257,12 @@ G92 X0 Y0 Z0</textarea>
 
       // Parserfehler erkennen
       if (doc.querySelector("parsererror")) {
-        return { ok: false, error: "Ungültiges SVG (Parserfehler)." };
+        return { ok: false, error: "Invalid SVG (parser error)." };
       }
 
       const svg = doc.documentElement;
       if (!svg || svg.tagName.toLowerCase() !== "svg") {
-        return { ok: false, error: "Datei enthält kein <svg>-Root-Element." };
+        return { ok: false, error: "File does not contain an <svg> root element." };
       }
 
       const paths = svg.querySelectorAll("path");
@@ -353,18 +343,16 @@ G92 X0 Y0 Z0</textarea>
       // Collect axis mapping
       const map = {
         x: $("mapX").value,
-        y: $("mapY").value,
-        z: $("mapZ").value || null
+        y: $("mapY").value
       };
       const mirror = {
         x: $("mirrorX").checked,
-        y: $("mirrorY").checked,
-        z: $("mirrorZ").checked
+        y: $("mirrorY").checked
       };
 
       // Determine bounding box for mirror offsets
       let bbox = null;
-      if (mirror.x || mirror.y || mirror.z) {
+      if (mirror.x || mirror.y) {
         // Compute min/max of points (we assume SVG coordinates)
         bbox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
         for (const p of points) {
@@ -377,14 +365,13 @@ G92 X0 Y0 Z0</textarea>
 
       const out = [];
       out.push("; Generated by SVG->GCode (generic mapping)");
-      out.push(`; Mapping: SVG X→${map.x || "-"}, Y→${map.y || "-"}, Z→${map.z || "-"}`);
-      if (mirror.x) out.push("; X mirrored+shifted");
-      if (mirror.y) out.push("; Y mirrored+shifted");
-      if (mirror.z) out.push("; Z mirrored+shifted");
+      out.push(`; Mapping: SVG X→${map.x || "-"}, Y→${map.y || "-"}`);
+      if (mirror.x) out.push("; X inverted");
+      if (mirror.y) out.push("; Y inverted");
       out.push(...headerLines);
 
       if (!points.length) {
-        throw new Error("Keine Punkte zum Konvertieren vorhanden.");
+        throw new Error("No points to convert.");
       }
 
       // Helper to map a point to CNC axes
@@ -401,12 +388,6 @@ G92 X0 Y0 Z0</textarea>
           let val = p.y;
           if (mirror.y && bbox) val = -val + bbox.maxY;
           cnc[map.y] = (cnc[map.y] || 0) + val;
-        }
-        // SVG Z (always 0 for 2D) → mapped axis
-        if (map.z) {
-          let val = 0;
-          if (mirror.z && bbox) val = -val + (bbox.maxZ || 0); // maxZ not defined, ignore
-          cnc[map.z] = (cnc[map.z] || 0) + val;
         }
         return cnc;
       }
@@ -446,25 +427,25 @@ G92 X0 Y0 Z0</textarea>
         const res = validateSvgStrictOnePath(svgText);
         if (!res.ok) {
           $("generateBtn").disabled = true;
-          $("preview").innerHTML = `<span class="hint">Keine Vorschau</span>`;
-          setStatus(res.error, true);
+          $("preview").innerHTML = `<span class="hint">No preview</span>`;
+          setUploadStatus(res.error, true);
           return;
         }
 
         parsedPath = res.path;
         renderPreview(parsedPath);
         $("generateBtn").disabled = false;
-        setStatus("SVG ist gültig: genau ein <path>, keine anderen Shapes.");
+        setUploadStatus("SVG is valid: exactly one <path>, no other shapes.");
       } catch (err) {
         $("generateBtn").disabled = true;
-        $("preview").innerHTML = `<span class="hint">Keine Vorschau</span>`;
-        setStatus("Fehler beim Lesen/Validieren: " + err.message, true);
+        $("preview").innerHTML = `<span class="hint">No preview</span>`;
+        setUploadStatus("Error reading/validating: " + err.message, true);
       }
     });
 
     $("generateBtn").addEventListener("click", () => {
       if (!parsedPath) {
-        setStatus("Bitte zuerst eine gültige SVG laden.", true);
+        setStatus("Please load a valid SVG first.", true);
         return;
       }
 
@@ -490,7 +471,7 @@ G92 X0 Y0 Z0</textarea>
         setStatus(`G-Code erzeugt: ${points.length} Punkte (${sampleCount} Segmente).`);
       } catch (err) {
         resetOutput();
-        setStatus("Fehler bei der G-Code-Generierung: " + err.message, true);
+        setStatus("Error generating G‑Code: " + err.message, true);
       }
     });
 
@@ -516,9 +497,9 @@ G92 X0 Y0 Z0</textarea>
         const old = btn.textContent;
         btn.textContent = "Copied!";
         setTimeout(() => (btn.textContent = old), 1200);
-        setStatus("G-Code in Zwischenablage kopiert.");
+        setStatus("G‑Code copied to clipboard.");
       } catch (err) {
-        setStatus("Copy fehlgeschlagen: " + (err?.message || err), true);
+        setStatus("Copy failed: " + (err?.message || err), true);
       }
     });
 
@@ -526,9 +507,9 @@ G92 X0 Y0 Z0</textarea>
       if (!lastGcode) return;
       try {
         await navigator.clipboard.writeText(lastGcode);
-        setStatus("NCViewer geöffnet. G-Code ist in der Zwischenablage.");
+        setStatus("NCViewer opened. G‑Code is in clipboard.");
       } catch (_) {
-        setStatus("NCViewer geöffnet. Falls nötig: G-Code per Copy kopieren.");
+        setStatus("NCViewer opened. If needed, copy G‑Code manually.");
       }
       window.open("https://ncviewer.com/", "_blank", "noopener,noreferrer");
     });
