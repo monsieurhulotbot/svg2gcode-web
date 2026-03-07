@@ -367,14 +367,27 @@ G92 X0 Y0 Z0</textarea>
       svg.style.width = "";
       svg.style.height = "";
 
-      // Add 10% padding on each side
-      const maxDim = Math.max(bbox.width, bbox.height, 1);
+      // Compute CNC zero-point in SVG space (same logic as addAxisArrows)
+      const mirror = { x: $("mirrorX").checked, y: $("mirrorY").checked };
+      const originSvgX = mirror.x ? (bbox.x + bbox.width) : 0;
+      const originSvgY = mirror.y ? (bbox.y + bbox.height) : 0;
+
+      // Build a rect that covers both the path bbox AND the CNC origin
+      const unionMinX = Math.min(bbox.x, originSvgX);
+      const unionMinY = Math.min(bbox.y, originSvgY);
+      const unionMaxX = Math.max(bbox.x + bbox.width, originSvgX);
+      const unionMaxY = Math.max(bbox.y + bbox.height, originSvgY);
+      const unionW = unionMaxX - unionMinX;
+      const unionH = unionMaxY - unionMinY;
+
+      // Add 10% padding on each side (based on the union extent)
+      const maxDim = Math.max(unionW, unionH, 1);
       const pad = maxDim * 0.10;
 
-      const vbX = bbox.x - pad;
-      const vbY = bbox.y - pad;
-      const vbW = bbox.width + pad * 2;
-      const vbH = bbox.height + pad * 2;
+      const vbX = unionMinX - pad;
+      const vbY = unionMinY - pad;
+      const vbW = unionW + pad * 2;
+      const vbH = unionH + pad * 2;
 
       svg.setAttribute("viewBox", `${vbX} ${vbY} ${vbW} ${vbH}`);
       path.setAttribute("stroke-width", String(Math.max(maxDim * 0.005, 0.5)));
