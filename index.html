@@ -300,6 +300,233 @@ G92 X0 Y0 Z0</textarea>
 
     const SHAPE_SELECTOR = "path,rect,circle,ellipse,line,polyline,polygon";
 
+    // Convert any SVG shape to a <path> element, baking in any transform attributes.
+    // This normalizes rect/circle/ellipse/etc. into path `d` data so that
+    // anchor extraction and sampling work uniformly.
+    function shapeToPath(shapeEl) {
+      const ns = "http://www.w3.org/2000/svg";
+      const tag = shapeEl.tagName.toLowerCase();
+
+      // We need a live SVG context for geometry calculations
+      const tmpSvg = document.createElementNS(ns, "svg");
+      tmpSvg.setAttribute("viewBox", "0 0 10000 10000");
+      tmpSvg.style.cssText = "position:absolute;visibility:hidden;width:0;height:0";
+      const clone = shapeEl.cloneNode(true);
+      tmpSvg.appendChild(clone);
+      document.body.appendChild(tmpSvg);
+
+      let d = "";
+      if (tag === "path") {
+        d = clone.getAttribute("d") || "";
+      } else if (tag === "rect") {
+        const x = parseFloat(clone.getAttribute("x")) || 0;
+        const y = parseFloat(clone.getAttribute("y")) || 0;
+        const w = parseFloat(clone.getAttribute("width")) || 0;
+        const h = parseFloat(clone.getAttribute("height")) || 0;
+        const rx = Math.min(parseFloat(clone.getAttribute("rx") || clone.getAttribute("ry")) || 0, w / 2);
+        const ry = Math.min(parseFloat(clone.getAttribute("ry") || clone.getAttribute("rx")) || 0, h / 2);
+        if (rx > 0 || ry > 0) {
+          d = `M${x + rx},${y}`
+            + `L${x + w - rx},${y}`
+            + `A${rx},${ry} 0 0 1 ${x + w},${y + ry}`
+            + `L${x + w},${y + h - ry}`
+            + `A${rx},${ry} 0 0 1 ${x + w - rx},${y + h}`
+            + `L${x + rx},${y + h}`
+            + `A${rx},${ry} 0 0 1 ${x},${y + h - ry}`
+            + `L${x},${y + ry}`
+            + `A${rx},${ry} 0 0 1 ${x + rx},${y}`
+            + `Z`;
+        } else {
+          d = `M${x},${y}L${x + w},${y}L${x + w},${y + h}L${x},${y + h}Z`;
+        }
+      } else if (tag === "circle") {
+        const cx = parseFloat(clone.getAttribute("cx")) || 0;
+        const cy = parseFloat(clone.getAttribute("cy")) || 0;
+        const r = parseFloat(clone.getAttribute("r")) || 0;
+        d = `M${cx - r},${cy}`
+          + `A${r},${r} 0 1 0 ${cx + r},${cy}`
+          + `A${r},${r} 0 1 0 ${cx - r},${cy}Z`;
+      } else if (tag === "ellipse") {
+        const cx = parseFloat(clone.getAttribute("cx")) || 0;
+        const cy = parseFloat(clone.getAttribute("cy")) || 0;
+        const rx = parseFloat(clone.getAttribute("rx")) || 0;
+        const ry = parseFloat(clone.getAttribute("ry")) || 0;
+        d = `M${cx - rx},${cy}`
+          + `A${rx},${ry} 0 1 0 ${cx + rx},${cy}`
+          + `A${rx},${ry} 0 1 0 ${cx - rx},${cy}Z`;
+      } else if (tag === "line") {
+        const x1 = parseFloat(clone.getAttribute("x1")) || 0;
+        const y1 = parseFloat(clone.getAttribute("y1")) || 0;
+        const x2 = parseFloat(clone.getAttribute("x2")) || 0;
+        const y2 = parseFloat(clone.getAttribute("y2")) || 0;
+        d = `M${x1},${y1}L${x2},${y2}`;
+      } else if (tag === "polyline" || tag === "polygon") {
+        const pts = (clone.getAttribute("points") || "").trim();
+        const coords = pts.split(/[\s,]+/).map(Number);
+        if (coords.length >= 2) {
+          d = `M${coords[0]},${coords[1]}`;
+          for (let i = 2; i < coords.length - 1; i += 2) {
+            d += `L${coords[i]},${coords[i + 1]}`;
+          }
+          if (tag === "polygon") d += "Z";
+        }
+      }
+
+      // Bake in transform attribute if present
+      const transform = clone.getAttribute("transform");
+      if (transform && d) {
+        const pathTmp = document.createElementNS(ns, "path");
+        pathTmp.setAttribute("d", d);
+        pathTmp.setAttribute("transform", transform);
+        tmpSvg.appendChild(pathTmp);
+        // Use the browser to resolve: sample many points in transformed space
+        // Then rebuild d from the transformed coordinates
+        d = bakeTransformIntoD(pathTmp);
+        tmpSvg.removeChild(pathTmp);
+      }
+
+      document.body.removeChild(tmpSvg);
+
+      // Create the final path element (in the original SVG document context)
+      const pathEl = shapeEl.ownerSVGElement
+        ? shapeEl.ownerDocument.createElementNS(ns, "path")
+        : document.createElementNS(ns, "path");
+      pathEl.setAttribute("d", d);
+      // Copy non-geometry attributes (style etc.)
+      for (const attr of shapeEl.attributes) {
+        if (!["d", "x", "y", "width", "height", "cx", "cy", "r", "rx", "ry",
+              "x1", "y1", "x2", "y2", "points", "transform"].includes(attr.name)) {
+          pathEl.setAttribute(attr.name, attr.value);
+        }
+      }
+      return pathEl;
+    }
+
+    // Bake a transform into a path's d attribute by sampling the transformed path
+    // and rebuilding the d string from straight line segments between anchor points.
+    // For the initial G0 travel optimization to work well, we extract the transformed
+    // positions of the original anchors and connect them with line segments.
+    function bakeTransformIntoD(pathEl) {
+      // Get the CTM (current transformation matrix) applied to this element
+      let ctm;
+      try { ctm = pathEl.getCTM(); } catch (e) { ctm = null; }
+
+      const origD = pathEl.getAttribute("d") || "";
+      if (!ctm) return origD;
+
+      // Parse anchors from the untransformed d
+      const tmpPathEl = { tagName: "path", getAttribute: (a) => a === "d" ? origD : null };
+      // We can reuse extractAnchors since it only needs getAttribute("d")
+      const anchors = extractAnchors(tmpPathEl);
+      if (anchors.length < 2) {
+        // Fallback: dense sampling
+        const total = pathEl.getTotalLength();
+        const n = Math.max(100, Math.ceil(total / 0.5));
+        let d = "";
+        for (let i = 0; i <= n; i++) {
+          const p = pathEl.getPointAtLength((i / n) * total);
+          // getPointAtLength on a transformed element returns transformed coords
+          d += (i === 0 ? "M" : "L") + `${p.x},${p.y}`;
+        }
+        // Check if closed
+        if (origD.match(/[Zz]\s*$/)) d += "Z";
+        return d;
+      }
+
+      // Transform each anchor through the CTM
+      const svg = pathEl.ownerSVGElement;
+      const transformed = anchors.map(a => {
+        const pt = svg.createSVGPoint();
+        pt.x = a.x; pt.y = a.y;
+        const tp = pt.matrixTransform(ctm);
+        return { x: tp.x, y: tp.y };
+      });
+
+      // But anchors connected by curves need intermediate points.
+      // Strategy: map anchors to arc-length, then adaptively sample each segment
+      // using the transformed getPointAtLength.
+      const total = pathEl.getTotalLength();
+      const anchorLengths = mapAnchorsToLengthOnEl(anchors, pathEl, total);
+
+      // Ensure start and end
+      if (anchorLengths[0] > 0.001) anchorLengths.unshift(0);
+      if (total - anchorLengths[anchorLengths.length - 1] > 0.001) anchorLengths.push(total);
+
+      const tolSq = 0.01 * 0.01; // tight tolerance for transform baking
+      const pts = [ptFromEl(pathEl, anchorLengths[0])];
+      for (let i = 1; i < anchorLengths.length; i++) {
+        subdivideEl(anchorLengths[i - 1], anchorLengths[i], pathEl, tolSq, 14, pts);
+      }
+
+      let d = `M${pts[0].x},${pts[0].y}`;
+      for (let i = 1; i < pts.length; i++) {
+        d += `L${pts[i].x},${pts[i].y}`;
+      }
+      if (origD.match(/[Zz]\s*$/)) d += "Z";
+      return d;
+    }
+
+    function ptFromEl(el, t) {
+      const p = el.getPointAtLength(t);
+      return { x: p.x, y: p.y };
+    }
+
+    function subdivideEl(tA, tB, el, tolSq, depth, out) {
+      if (depth <= 0 || (tB - tA) < 0.001) {
+        out.push(ptFromEl(el, tB));
+        return;
+      }
+      const tMid = (tA + tB) / 2;
+      const pA = out[out.length - 1];
+      const pB = ptFromEl(el, tB);
+      const pMid = ptFromEl(el, tMid);
+      const mx = (pA.x + pB.x) / 2;
+      const my = (pA.y + pB.y) / 2;
+      const dSq = (pMid.x - mx) * (pMid.x - mx) + (pMid.y - my) * (pMid.y - my);
+      if (dSq > tolSq) {
+        subdivideEl(tA, tMid, el, tolSq, depth - 1, out);
+        subdivideEl(tMid, tB, el, tolSq, depth - 1, out);
+      } else {
+        out.push(pB);
+      }
+    }
+
+    function mapAnchorsToLengthOnEl(anchors, el, totalLen) {
+      const lengths = [0];
+      let searchStart = 0;
+      for (let a = 1; a < anchors.length; a++) {
+        const target = anchors[a];
+        let lo = searchStart;
+        let hi = totalLen;
+        const steps = 200;
+        const span = hi - lo;
+        let bestT = lo, bestDist = Infinity;
+        for (let s = 0; s <= steps; s++) {
+          const t = lo + (s / steps) * span;
+          const p = el.getPointAtLength(t);
+          const d = (p.x - target.x) ** 2 + (p.y - target.y) ** 2;
+          if (d < bestDist) { bestDist = d; bestT = t; }
+        }
+        let refineLo = Math.max(lo, bestT - span / steps);
+        let refineHi = Math.min(hi, bestT + span / steps);
+        for (let r = 0; r < 15; r++) {
+          const t1 = refineLo + (refineHi - refineLo) / 3;
+          const t2 = refineLo + 2 * (refineHi - refineLo) / 3;
+          const p1 = el.getPointAtLength(t1);
+          const p2 = el.getPointAtLength(t2);
+          const d1 = (p1.x - target.x) ** 2 + (p1.y - target.y) ** 2;
+          const d2 = (p2.x - target.x) ** 2 + (p2.y - target.y) ** 2;
+          if (d1 < d2) refineHi = t2; else refineLo = t1;
+        }
+        const bestFinal = (refineLo + refineHi) / 2;
+        if (bestFinal > searchStart + 0.01) {
+          lengths.push(bestFinal);
+          searchStart = bestFinal;
+        }
+      }
+      return lengths;
+    }
+
     // Validates: exactly one shape element in the SVG.
     function validateSvgSingleShape(svgString) {
       const parser = new DOMParser();
@@ -322,7 +549,12 @@ G92 X0 Y0 Z0</textarea>
         return { ok: false, error: `Expected exactly 1 shape, found ${shapes.length}. Merge or simplify your SVG.` };
       }
 
-      return { ok: true, svg, shape: shapes[0] };
+      // Convert the shape to a normalized <path>, baking in transforms
+      const pathEl = shapeToPath(shapes[0]);
+      // Inject into the parsed SVG so it has an ownerSVGElement for getBBox etc.
+      svg.appendChild(pathEl);
+
+      return { ok: true, svg, shape: pathEl };
     }
 
     // Zeichnet eine sichere Vorschau für beliebige Shape-Elemente.
@@ -580,7 +812,8 @@ G92 X0 Y0 Z0</textarea>
     // Returns [{x,y}, ...] for each explicit endpoint in path commands.
     // For non-path shapes returns [].
     function extractAnchors(shapeEl) {
-      if (shapeEl.tagName.toLowerCase() !== "path") return [];
+      const tag = (shapeEl.tagName || "").toLowerCase();
+      if (tag !== "path") return [];
       const d = shapeEl.getAttribute("d") || "";
       if (!d.trim()) return [];
 
