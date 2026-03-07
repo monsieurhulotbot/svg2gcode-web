@@ -278,8 +278,8 @@ G92 X0 Y0 Z0</textarea>
     
     // Refresh the preview if a path is already loaded
     function refreshPreviewIfLoaded() {
-      if (parsedPath) {
-        renderPreview(parsedPath);
+      if (parsedShape) {
+        renderPreview(parsedShape);
       }
     }
 // Load config and attach change listeners on page load
@@ -294,16 +294,17 @@ G92 X0 Y0 Z0</textarea>
     });
 // --- Zustand ---
     let svgText = "";
-    let parsedPath = null; // SVGPathElement (aus DOMParser-Dokument)
+    let parsedShape = null; // Any SVG shape element (path, rect, circle, etc.)
     let lastGcode = "";
     let lastFileBase = "output";
 
-    // Validiert: genau ein <path>, keine weiteren Shape-Elemente.
-    function validateSvgStrictOnePath(svgString) {
+    const SHAPE_SELECTOR = "path,rect,circle,ellipse,line,polyline,polygon";
+
+    // Validates: exactly one shape element in the SVG.
+    function validateSvgSingleShape(svgString) {
       const parser = new DOMParser();
       const doc = parser.parseFromString(svgString, "image/svg+xml");
 
-      // Parserfehler erkennen
       if (doc.querySelector("parsererror")) {
         return { ok: false, error: "Invalid SVG (parser error)." };
       }
@@ -313,31 +314,22 @@ G92 X0 Y0 Z0</textarea>
         return { ok: false, error: "File does not contain an <svg> root element." };
       }
 
-      const paths = svg.querySelectorAll("path");
-      if (paths.length !== 1) {
-        return { ok: false, error: `Expected exactly 1 <path>, found: ${paths.length}.` };
+      const shapes = svg.querySelectorAll(SHAPE_SELECTOR);
+      if (shapes.length === 0) {
+        return { ok: false, error: "No shape elements found (path, rect, circle, ellipse, line, polyline, polygon)." };
+      }
+      if (shapes.length > 1) {
+        return { ok: false, error: `Expected exactly 1 shape, found ${shapes.length}. Merge or simplify your SVG.` };
       }
 
-      // Verbotene zusätzliche Shapes (laut Anforderung: nur ein Path, keine anderen Shapes)
-      const forbiddenShapeSelectors = "rect,circle,ellipse,line,polyline,polygon";
-      const others = svg.querySelectorAll(forbiddenShapeSelectors);
-      if (others.length > 0) {
-        return {
-          ok: false,
-          error: `Not allowed: other shapes found (${others.length}). Only one <path> is allowed.`
-        };
-      }
-
-      return { ok: true, svg, path: paths[0] };
+      return { ok: true, svg, shape: shapes[0] };
     }
 
-    // Zeichnet eine sichere Vorschau: nur den validierten Path in ein eigenes SVG einsetzen.
-    // The viewBox is computed from the rendered path's bounding box so it is always centered.
-    function renderPreview(pathEl) {
+    // Zeichnet eine sichere Vorschau für beliebige Shape-Elemente.
+    // The viewBox is computed from the rendered shape's bounding box so it is always centered.
+    function renderPreview(shapeEl) {
       const preview = $("preview");
       preview.innerHTML = "";
-
-      const d = pathEl.getAttribute("d") || "";
 
       const ns = "http://www.w3.org/2000/svg";
       const svg = document.createElementNS(ns, "svg");
@@ -350,15 +342,15 @@ G92 X0 Y0 Z0</textarea>
       svg.style.width = "0";
       svg.style.height = "0";
 
-      const path = document.createElementNS(ns, "path");
-      path.setAttribute("d", d);
-      path.setAttribute("fill", "none");
-      path.setAttribute("stroke", "#60a5fa");
-      svg.appendChild(path);
+      // Clone the shape element into our preview SVG
+      const clone = shapeEl.cloneNode(true);
+      clone.setAttribute("fill", "none");
+      clone.setAttribute("stroke", "#60a5fa");
+      svg.appendChild(clone);
       document.body.appendChild(svg);
 
       // Now getBBox works on the live DOM element
-      const bbox = path.getBBox();
+      const bbox = clone.getBBox();
       document.body.removeChild(svg);
 
       // Reset styles
@@ -390,7 +382,7 @@ G92 X0 Y0 Z0</textarea>
       const vbH = unionH + pad * 2;
 
       svg.setAttribute("viewBox", `${vbX} ${vbY} ${vbW} ${vbH}`);
-      path.setAttribute("stroke-width", String(Math.max(maxDim * 0.005, 0.5)));
+      clone.setAttribute("stroke-width", String(Math.max(maxDim * 0.005, 0.5)));
 
       preview.appendChild(svg);
       addAxisArrows(svg, bbox);
@@ -491,21 +483,36 @@ G92 X0 Y0 Z0</textarea>
       });
     }
 
-    // Erzeugt Stützpunkte entlang des gesamten Pathes.
-    // Damit werden alle Kurven/Bögen (inkl. Arc-Kommandos) automatisch in Liniensegmente zerlegt.
-    function samplePath(pathEl, sampleCount) {
-      const total = pathEl.getTotalLength();
+    // Erzeugt Stützpunkte entlang des gesamten Shapes.
+    // getTotalLength() / getPointAtLength() work on all SVG geometry elements
+    // but require a live (rendered) DOM for non-path elements.
+    function samplePath(shapeEl, sampleCount) {
+      // Temporarily mount in a live SVG so getTotalLength works for all shape types
+      const ns = "http://www.w3.org/2000/svg";
+      const tmpSvg = document.createElementNS(ns, "svg");
+      tmpSvg.setAttribute("viewBox", "0 0 10000 10000");
+      tmpSvg.style.position = "absolute";
+      tmpSvg.style.visibility = "hidden";
+      tmpSvg.style.width = "0";
+      tmpSvg.style.height = "0";
+      const clone = shapeEl.cloneNode(true);
+      tmpSvg.appendChild(clone);
+      document.body.appendChild(tmpSvg);
+
+      const total = clone.getTotalLength();
       if (!isFinite(total) || total <= 0) {
-        throw new Error("Pfadlänge ist 0 oder ungültig.");
+        document.body.removeChild(tmpSvg);
+        throw new Error("Shape length is 0 or invalid.");
       }
 
       const n = Math.max(2, sampleCount | 0);
       const points = [];
       for (let i = 0; i <= n; i++) {
         const t = (i / n) * total;
-        const p = pathEl.getPointAtLength(t);
+        const p = clone.getPointAtLength(t);
         points.push({ x: p.x, y: p.y });
       }
+      document.body.removeChild(tmpSvg);
       return points;
     }
 
@@ -633,7 +640,7 @@ G92 X0 Y0 Z0</textarea>
 
     $("svgFile").addEventListener("change", async (ev) => {
       resetOutput();
-      parsedPath = null;
+      parsedShape = null;
       setStatus("");
 
       const file = ev.target.files?.[0];
@@ -643,7 +650,7 @@ G92 X0 Y0 Z0</textarea>
 
       try {
         svgText = await file.text();
-        const res = validateSvgStrictOnePath(svgText);
+        const res = validateSvgSingleShape(svgText);
         if (!res.ok) {
           $("generateBtn").disabled = true;
           $("preview").innerHTML = `<span class="hint">No preview</span>`;
@@ -651,10 +658,10 @@ G92 X0 Y0 Z0</textarea>
           return;
         }
 
-        parsedPath = res.path;
-        renderPreview(parsedPath);
+        parsedShape = res.shape;
+        renderPreview(parsedShape);
         $("generateBtn").disabled = false;
-        setUploadStatus("SVG is valid: exactly one <path>, no other shapes.");
+        setUploadStatus("SVG is valid: exactly one shape element found.");
       } catch (err) {
         $("generateBtn").disabled = true;
         $("preview").innerHTML = `<span class="hint">No preview</span>`;
@@ -663,7 +670,7 @@ G92 X0 Y0 Z0</textarea>
     });
 
     $("generateBtn").addEventListener("click", () => {
-      if (!parsedPath) {
+      if (!parsedShape) {
         setStatus("Please load a valid SVG first.", true);
         return;
       }
@@ -673,7 +680,7 @@ G92 X0 Y0 Z0</textarea>
         const feed = Number($("feed").value || 800);
         const decimals = Math.max(0, Math.min(6, Number($("decimals").value || 3)));
 
-        const points = samplePath(parsedPath, sampleCount);
+        const points = samplePath(parsedShape, sampleCount);
         const gcode = pointsToGcode(points, {
           feed,
           decimals,
