@@ -198,6 +198,10 @@ G92 X0 Y0 Z0</textarea>
         </div>
 
         <div id="status" class="status"></div>
+
+        <div class="row" style="margin-top:1rem;">
+          <button id="resetBtn" style="background:transparent; border:1px solid var(--border); color:var(--muted); font-size:0.82rem; padding:5px 10px;">Reset all settings to defaults</button>
+        </div>
       </section>
 
       <section class="card">
@@ -244,16 +248,30 @@ G92 X0 Y0 Z0</textarea>
         .filter(Boolean);
     }
 
-    // --- Cookie storage for axis mapping ---
+    // --- Cookie storage for all settings ---
     const COOKIE_NAME = "svg2gcode_config";
     const COOKIE_DAYS = 30;
+
+    const DEFAULTS = {
+      mapX: "Y", mapY: "Z",
+      mirrorX: false, mirrorY: true,
+      tolerance: "0.05", feed: "800", decimals: "3",
+      header: "G21\nG90\nG92 X0 Y0 Z0", footer: "M2",
+      ext: "gcode"
+    };
 
     function saveConfig() {
       const config = {
         mapX: $("mapX").value,
         mapY: $("mapY").value,
         mirrorX: $("mirrorX").checked,
-        mirrorY: $("mirrorY").checked
+        mirrorY: $("mirrorY").checked,
+        tolerance: $("tolerance").value,
+        feed: $("feed").value,
+        decimals: $("decimals").value,
+        header: $("header").value,
+        footer: $("footer").value,
+        ext: $("ext").value
       };
       const expires = new Date(Date.now() + COOKIE_DAYS * 864e5).toUTCString();
       document.cookie = `${COOKIE_NAME}=${encodeURIComponent(JSON.stringify(config))}; expires=${expires}; path=/`;
@@ -268,11 +286,34 @@ G92 X0 Y0 Z0</textarea>
         if (config.mapY && ["X","Y","Z"].includes(config.mapY)) $("mapY").value = config.mapY;
         if (typeof config.mirrorX === "boolean") $("mirrorX").checked = config.mirrorX;
         if (typeof config.mirrorY === "boolean") $("mirrorY").checked = config.mirrorY;
+        if (config.tolerance) $("tolerance").value = config.tolerance;
+        if (config.feed) $("feed").value = config.feed;
+        if (config.decimals) $("decimals").value = config.decimals;
+        if (typeof config.header === "string") $("header").value = config.header;
+        if (typeof config.footer === "string") $("footer").value = config.footer;
+        if (config.ext && ["gcode","nc"].includes(config.ext)) $("ext").value = config.ext;
         return true;
       } catch (e) {
         console.warn("Failed to parse cookie", e);
         return false;
       }
+    }
+
+    function resetConfig() {
+      // Delete cookie
+      document.cookie = `${COOKIE_NAME}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/`;
+      // Restore defaults
+      $("mapX").value = DEFAULTS.mapX;
+      $("mapY").value = DEFAULTS.mapY;
+      $("mirrorX").checked = DEFAULTS.mirrorX;
+      $("mirrorY").checked = DEFAULTS.mirrorY;
+      $("tolerance").value = DEFAULTS.tolerance;
+      $("feed").value = DEFAULTS.feed;
+      $("decimals").value = DEFAULTS.decimals;
+      $("header").value = DEFAULTS.header;
+      $("footer").value = DEFAULTS.footer;
+      $("ext").value = DEFAULTS.ext;
+      refreshPreviewIfLoaded();
     }
 
     
@@ -285,12 +326,21 @@ G92 X0 Y0 Z0</textarea>
 // Load config and attach change listeners on page load
     document.addEventListener("DOMContentLoaded", () => {
       loadConfig();
-      [$("mapX"), $("mapY"), $("mirrorX"), $("mirrorY")].forEach(el => {
+      // Save on any settings change
+      const watchEls = [$("mapX"), $("mapY"), $("mirrorX"), $("mirrorY"),
+                         $("tolerance"), $("feed"), $("decimals"), $("ext")];
+      watchEls.forEach(el => {
         if (el) el.addEventListener("change", () => {
           saveConfig();
           refreshPreviewIfLoaded();
         });
       });
+      // Also save header/footer on input (textareas)
+      [$("header"), $("footer")].forEach(el => {
+        if (el) el.addEventListener("input", saveConfig);
+      });
+      // Reset button
+      $("resetBtn").addEventListener("click", resetConfig);
     });
 // --- Zustand ---
     let svgText = "";
