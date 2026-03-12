@@ -247,6 +247,18 @@ G92 X0 Y0 Z0</textarea>
               </select>
             </div>
             <div>
+              <label for="flowControlMode">Flow Control</label>
+              <select id="flowControlMode">
+                <option value="none" selected>Keine Flow Control</option>
+                <option value="ok">Warten auf OK</option>
+                <option value="dtrrts">DTR/RTS</option>
+              </select>
+            </div>
+            <div>
+              <label for="okTimeoutMs">OK Timeout (ms)</label>
+              <input id="okTimeoutMs" type="number" min="500" step="100" value="5000" />
+            </div>
+            <div>
               <label>&nbsp;</label>
               <button id="connectSerialBtn">Connect USB Serial</button>
             </div>
@@ -258,8 +270,7 @@ G92 X0 Y0 Z0</textarea>
 
           <div class="row inline">
             <button id="sendGcodeBtn" disabled>Send full G-Code</button>
-            <input id="homeCmd" type="text" value="G28" />
-            <button id="homeBtn" disabled>Home</button>
+            <button id="homeBtn" disabled>Home (G28)</button>
           </div>
 
           <div class="row inline">
@@ -425,37 +436,66 @@ G92 X0 Y0 Z0</textarea>
           setSerialStatus("No G-Code to send.", true);
           return;
         }
+        serialIsSending = true;
+        updateSerialUiState();
         try {
-          setSerialStatus(`Sending ${lines.length} lines...`);
+          const flowMode = getFlowControlMode();
+          setSerialStatus(`Sending ${lines.length} lines (${flowModeLabel(flowMode)})...`);
+          if (flowMode === "dtrrts") await setDtrRtsSignals(true, true);
           for (let i = 0; i < lines.length; i++) {
             await sendSerialLine(lines[i]);
-            await delay(20);
           }
-          setSerialStatus(`G-Code sent (${lines.length} lines).`);
+          setSerialStatus(`G-Code sent (${lines.length} lines, ${flowModeLabel(flowMode)}).`);
         } catch (err) {
           setSerialStatus("Send failed: " + (err?.message || err), true);
+        } finally {
+          try {
+            if (getFlowControlMode() === "dtrrts") await setDtrRtsSignals(false, false);
+          } catch (signalErr) {
+            appendSerialLog(`[flow-control warning] ${signalErr?.message || signalErr}\n`);
+          }
+          serialIsSending = false;
+          updateSerialUiState();
         }
       });
 
       $("homeBtn").addEventListener("click", async () => {
-        const cmd = ($("homeCmd").value || "G28").trim() || "G28";
+        const cmd = "G28";
+        serialIsSending = true;
+        updateSerialUiState();
         try {
+          if (getFlowControlMode() === "dtrrts") await setDtrRtsSignals(true, true);
           await sendSerialLine(cmd);
           setSerialStatus(`Home command sent: ${cmd}`);
         } catch (err) {
           setSerialStatus("Home failed: " + (err?.message || err), true);
+        } finally {
+          try {
+            if (getFlowControlMode() === "dtrrts") await setDtrRtsSignals(false, false);
+          } catch (_) {}
+          serialIsSending = false;
+          updateSerialUiState();
         }
       });
 
       $("sendTerminalBtn").addEventListener("click", async () => {
         const cmd = $("terminalCmd").value.trim();
         if (!cmd) return;
+        serialIsSending = true;
+        updateSerialUiState();
         try {
+          if (getFlowControlMode() === "dtrrts") await setDtrRtsSignals(true, true);
           await sendSerialLine(cmd);
           $("terminalCmd").value = "";
           setSerialStatus("Command sent.");
         } catch (err) {
           setSerialStatus("Terminal send failed: " + (err?.message || err), true);
+        } finally {
+          try {
+            if (getFlowControlMode() === "dtrrts") await setDtrRtsSignals(false, false);
+          } catch (_) {}
+          serialIsSending = false;
+          updateSerialUiState();
         }
       });
 
@@ -478,6 +518,9 @@ G92 X0 Y0 Z0</textarea>
     let serialReader = null;
     let serialWriter = null;
     let serialKeepReading = false;
+    let serialIsSending = false;
+    let serialReadBuffer = "";
+    let pendingOkWaiter = null;
 
     function supportsWebSerial() {
       return typeof navigator !== "undefined" && "serial" in navigator;
@@ -485,6 +528,20 @@ G92 X0 Y0 Z0</textarea>
 
     function getCurrentGcode() {
       return $("gcodeOut").value || "";
+    }
+
+    function getFlowControlMode() {
+      return $("flowControlMode")?.value || "none";
+    }
+
+    function flowModeLabel(mode) {
+      if (mode === "ok") return "Warten auf OK";
+      if (mode === "dtrrts") return "DTR/RTS";
+      return "Keine Flow Control";
+    }
+
+    function getOkTimeoutMs() {
+      return Math.max(500, Number($("okTimeoutMs")?.value || 5000));
     }
 
     function appendSerialLog(text) {
@@ -506,14 +563,66 @@ G92 X0 Y0 Z0</textarea>
       const hasGcode = !!getCurrentGcode().trim();
       $("connectSerialBtn").disabled = !supportsWebSerial() || connected;
       $("disconnectSerialBtn").disabled = !connected;
-      $("sendGcodeBtn").disabled = !connected || !hasGcode;
-      $("homeBtn").disabled = !connected;
-      $("sendTerminalBtn").disabled = !connected;
-      $("baudRate").disabled = connected;
+      $("sendGcodeBtn").disabled = !connected || !hasGcode || serialIsSending;
+      $("homeBtn").disabled = !connected || serialIsSending;
+      $("sendTerminalBtn").disabled = !connected || serialIsSending;
+      $("baudRate").disabled = connected || serialIsSending;
+      $("flowControlMode").disabled = serialIsSending;
+      $("okTimeoutMs").disabled = serialIsSending;
     }
 
-    function delay(ms) {
-      return new Promise(resolve => setTimeout(resolve, ms));
+    function resolveOkWaiterIfNeeded(line) {
+      if (!pendingOkWaiter) return;
+      if (/^\s*ok\b/i.test(line || "")) {
+        const waiter = pendingOkWaiter;
+        pendingOkWaiter = null;
+        clearTimeout(waiter.timeoutId);
+        waiter.resolve();
+      }
+    }
+
+    function processSerialChunk(text) {
+      appendSerialLog(text);
+      serialReadBuffer += text;
+
+      const lines = serialReadBuffer.split(/\r?\n/);
+      serialReadBuffer = lines.pop() || "";
+      lines.forEach(resolveOkWaiterIfNeeded);
+
+      // Fallback for devices sending plain "ok" without trailing newline
+      if (pendingOkWaiter && /^\s*ok\s*$/i.test(serialReadBuffer)) {
+        resolveOkWaiterIfNeeded(serialReadBuffer);
+        serialReadBuffer = "";
+      }
+    }
+
+    function supportsSetSignals() {
+      return !!serialPort && typeof serialPort.setSignals === "function";
+    }
+
+    async function setDtrRtsSignals(dtr, rts) {
+      if (getFlowControlMode() !== "dtrrts") return;
+      if (!serialPort) throw new Error("Serial port not connected.");
+      if (!supportsSetSignals()) {
+        throw new Error("DTR/RTS not supported by this browser/port (setSignals unavailable).");
+      }
+      await serialPort.setSignals({ dataTerminalReady: !!dtr, requestToSend: !!rts });
+      appendSerialLog(`[signals] DTR=${dtr ? 1 : 0} RTS=${rts ? 1 : 0}\n`);
+    }
+
+    function waitForPrinterOk() {
+      if (pendingOkWaiter) {
+        throw new Error("Another OK wait is already active.");
+      }
+      const timeoutMs = getOkTimeoutMs();
+      return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          if (!pendingOkWaiter) return;
+          pendingOkWaiter = null;
+          reject(new Error(`Timeout waiting for printer OK (${timeoutMs} ms)`));
+        }, timeoutMs);
+        pendingOkWaiter = { resolve, reject, timeoutId };
+      });
     }
 
     async function startSerialReader() {
@@ -526,7 +635,7 @@ G92 X0 Y0 Z0</textarea>
         try {
           const { value, done } = await serialReader.read();
           if (done) break;
-          if (value) appendSerialLog(value);
+          if (value) processSerialChunk(value);
         } catch (_) {
           break;
         }
@@ -543,8 +652,9 @@ G92 X0 Y0 Z0</textarea>
         const baudRate = Number($("baudRate").value || 115200);
         await serialPort.open({ baudRate });
         serialWriter = serialPort.writable.getWriter();
-        setSerialStatus(`Connected at ${baudRate} baud.`);
-        appendSerialLog(`\n[connected ${baudRate} baud]\n`);
+        const dtrRtsInfo = supportsSetSignals() ? "DTR/RTS available" : "DTR/RTS not supported";
+        setSerialStatus(`Connected at ${baudRate} baud (${dtrRtsInfo}).`);
+        appendSerialLog(`\n[connected ${baudRate} baud | ${dtrRtsInfo}]\n`);
         startSerialReader();
       } catch (err) {
         serialPort = null;
@@ -556,6 +666,11 @@ G92 X0 Y0 Z0</textarea>
     async function closeSerialConnection() {
       try {
         serialKeepReading = false;
+        if (pendingOkWaiter) {
+          clearTimeout(pendingOkWaiter.timeoutId);
+          pendingOkWaiter.reject(new Error("Serial connection closed while waiting for OK."));
+          pendingOkWaiter = null;
+        }
         if (serialReader) {
           await serialReader.cancel().catch(() => {});
           serialReader.releaseLock();
@@ -570,6 +685,7 @@ G92 X0 Y0 Z0</textarea>
         }
       } finally {
         serialPort = null;
+        serialReadBuffer = "";
         setSerialStatus("Disconnected.");
         appendSerialLog("\n[disconnected]\n");
         updateSerialUiState();
@@ -578,10 +694,17 @@ G92 X0 Y0 Z0</textarea>
 
     async function sendSerialLine(line) {
       if (!serialWriter) throw new Error("Serial port not connected.");
+      const trimmed = (line || "").trim();
+      if (!trimmed) return;
+
       const encoder = new TextEncoder();
-      const payload = line.endsWith("\n") ? line : `${line}\n`;
+      const payload = trimmed.endsWith("\n") ? trimmed : `${trimmed}\n`;
       await serialWriter.write(encoder.encode(payload));
-      appendSerialLog(`> ${line.trim()}\n`);
+      appendSerialLog(`> ${trimmed}\n`);
+
+      if (getFlowControlMode() === "ok") {
+        await waitForPrinterOk();
+      }
     }
 
     const SHAPE_SELECTOR = "path,rect,circle,ellipse,line,polyline,polygon";
