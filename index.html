@@ -321,7 +321,6 @@ M203 X4 Y4 Z4 E100</textarea>
       header: "G21\nG90\nG92 X0 Y0 Z0\nM203 X4 Y4 Z4 E100", footer: "M2",
       ext: "gcode",
       baudRate: "250000",
-      waitForOk: true,
       okTimeoutSec: "20"
     };
 
@@ -338,7 +337,6 @@ M203 X4 Y4 Z4 E100</textarea>
         footer: $("footer").value,
         ext: $("ext").value,
         baudRate: $("baudRate").value,
-        waitForOk: false,
         okTimeoutSec: $("okTimeoutSec").value
       };
       const expires = new Date(Date.now() + COOKIE_DAYS * 864e5).toUTCString();
@@ -379,9 +377,6 @@ M203 X4 Y4 Z4 E100</textarea>
         if (config.ext && ["gcode","nc"].includes(config.ext)) $("ext").value = config.ext;
         if (config.baudRate && ["250000","115200","57600","38400","19200","9600"].includes(String(config.baudRate))) {
           $("baudRate").value = String(config.baudRate);
-        }
-        if (typeof config.waitForOk === "boolean") {
-          // Legacy cookie field (kept for backwards compatibility, logic now uses timeout only).
         }
         if (config.okTimeoutSec !== undefined && config.okTimeoutSec !== null && config.okTimeoutSec !== "") {
           $("okTimeoutSec").value = String(config.okTimeoutSec);
@@ -538,7 +533,7 @@ M203 X4 Y4 Z4 E100</textarea>
     }
 
     function getOkTimeoutSec() {
-      return Number($("okTimeoutSec").value || DEFAULTS.okTimeoutSec);
+      return Number($("okTimeoutSec").value);
     }
 
     function appendSerialLog(text) {
@@ -635,7 +630,7 @@ M203 X4 Y4 Z4 E100</textarea>
       }
       try {
         serialPort = await navigator.serial.requestPort();
-        const baudRate = Number($("baudRate").value || DEFAULTS.baudRate);
+        const baudRate = Number($("baudRate").value);
         await serialPort.open({ baudRate });
         serialWriter = serialPort.writable.getWriter();
         setSerialStatus(`Connected at ${baudRate} baud.`);
