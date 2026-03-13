@@ -239,7 +239,7 @@ M203 X4 Y4 Z4 E100</textarea>
             <div>
               <label for="baudRate">Baud rate</label>
               <select id="baudRate">
-                <option value="250000" selected>250000</option>
+                <option value="250000">250000</option>
                 <option value="115200">115200</option>
                 <option value="57600">57600</option>
                 <option value="38400">38400</option>
@@ -247,14 +247,10 @@ M203 X4 Y4 Z4 E100</textarea>
                 <option value="9600">9600</option>
               </select>
             </div>
-            <div style="display:flex; align-items:center; gap:0.5rem; margin-top:1.4rem;">
-              <input id="waitForOk" type="checkbox" checked />
-              <label for="waitForOk" style="margin:0; white-space:nowrap;">Wait for OK</label>
-            </div>
             <div>
-              <label for="okTimeoutSec">OK timeout (s)</label>
-              <input id="okTimeoutSec" type="number" step="1" value="20" />
-              <div class="hint">Set to 0 or less to disable OK checks.</div>
+              <label for="okTimeoutSec">Wait for OK (s)</label>
+              <input id="okTimeoutSec" type="number" step="1" />
+              <div class="hint">0 to disable</div>
             </div>
             <div>
               <label>&nbsp;</label>
@@ -323,7 +319,10 @@ M203 X4 Y4 Z4 E100</textarea>
       mirrorX: false, mirrorY: true,
       tolerance: "0.05", feed: "800", decimals: "3",
       header: "G21\nG90\nG92 X0 Y0 Z0\nM203 X4 Y4 Z4 E100", footer: "M2",
-      ext: "gcode"
+      ext: "gcode",
+      baudRate: "250000",
+      waitForOk: true,
+      okTimeoutSec: "20"
     };
 
     function saveConfig() {
@@ -339,14 +338,31 @@ M203 X4 Y4 Z4 E100</textarea>
         footer: $("footer").value,
         ext: $("ext").value,
         baudRate: $("baudRate").value,
-        waitForOk: $("waitForOk").checked,
+        waitForOk: false,
         okTimeoutSec: $("okTimeoutSec").value
       };
       const expires = new Date(Date.now() + COOKIE_DAYS * 864e5).toUTCString();
       document.cookie = `${COOKIE_NAME}=${encodeURIComponent(JSON.stringify(config))}; expires=${expires}; path=/`;
     }
 
+    function applyDefaults() {
+      $("mapX").value = DEFAULTS.mapX;
+      $("mapY").value = DEFAULTS.mapY;
+      $("mirrorX").checked = DEFAULTS.mirrorX;
+      $("mirrorY").checked = DEFAULTS.mirrorY;
+      $("tolerance").value = DEFAULTS.tolerance;
+      $("feed").value = DEFAULTS.feed;
+      $("decimals").value = DEFAULTS.decimals;
+      $("header").value = DEFAULTS.header;
+      $("footer").value = DEFAULTS.footer;
+      $("ext").value = DEFAULTS.ext;
+      $("baudRate").value = DEFAULTS.baudRate;
+      $("okTimeoutSec").value = DEFAULTS.okTimeoutSec;
+    }
+
     function loadConfig() {
+      applyDefaults();
+
       const match = document.cookie.match(new RegExp(`(?:^|; )${COOKIE_NAME}=([^;]*)`));
       if (!match) return false;
       try {
@@ -364,7 +380,9 @@ M203 X4 Y4 Z4 E100</textarea>
         if (config.baudRate && ["250000","115200","57600","38400","19200","9600"].includes(String(config.baudRate))) {
           $("baudRate").value = String(config.baudRate);
         }
-        if (typeof config.waitForOk === "boolean") $("waitForOk").checked = config.waitForOk;
+        if (typeof config.waitForOk === "boolean") {
+          // Legacy cookie field (kept for backwards compatibility, logic now uses timeout only).
+        }
         if (config.okTimeoutSec !== undefined && config.okTimeoutSec !== null && config.okTimeoutSec !== "") {
           $("okTimeoutSec").value = String(config.okTimeoutSec);
         }
@@ -379,19 +397,7 @@ M203 X4 Y4 Z4 E100</textarea>
       // Delete cookie
       document.cookie = `${COOKIE_NAME}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/`;
       // Restore defaults
-      $("mapX").value = DEFAULTS.mapX;
-      $("mapY").value = DEFAULTS.mapY;
-      $("mirrorX").checked = DEFAULTS.mirrorX;
-      $("mirrorY").checked = DEFAULTS.mirrorY;
-      $("tolerance").value = DEFAULTS.tolerance;
-      $("feed").value = DEFAULTS.feed;
-      $("decimals").value = DEFAULTS.decimals;
-      $("header").value = DEFAULTS.header;
-      $("footer").value = DEFAULTS.footer;
-      $("ext").value = DEFAULTS.ext;
-      $("baudRate").value = "250000";
-      $("waitForOk").checked = true;
-      $("okTimeoutSec").value = "20";
+      applyDefaults();
       refreshPreviewIfLoaded();
     }
 
@@ -408,7 +414,7 @@ M203 X4 Y4 Z4 E100</textarea>
       // Save on any settings change
       const watchEls = [$("mapX"), $("mapY"), $("mirrorX"), $("mirrorY"),
                          $("tolerance"), $("feed"), $("decimals"), $("ext"),
-                         $("baudRate"), $("waitForOk"), $("okTimeoutSec")];
+                         $("baudRate"), $("okTimeoutSec")];
       watchEls.forEach(el => {
         if (el) el.addEventListener("change", () => {
           saveConfig();
@@ -528,11 +534,11 @@ M203 X4 Y4 Z4 E100</textarea>
     }
 
     function shouldWaitForOk() {
-      return !!$("waitForOk")?.checked;
+      return getOkTimeoutSec() > 0;
     }
 
     function getOkTimeoutSec() {
-      return Number($("okTimeoutSec")?.value || 20);
+      return Number($("okTimeoutSec").value || DEFAULTS.okTimeoutSec);
     }
 
     function appendSerialLog(text) {
@@ -558,7 +564,6 @@ M203 X4 Y4 Z4 E100</textarea>
       $("homeBtn").disabled = !connected || serialIsSending;
       $("sendTerminalBtn").disabled = !connected || serialIsSending;
       $("baudRate").disabled = connected || serialIsSending;
-      $("waitForOk").disabled = serialIsSending;
       $("okTimeoutSec").disabled = serialIsSending;
     }
 
@@ -630,7 +635,7 @@ M203 X4 Y4 Z4 E100</textarea>
       }
       try {
         serialPort = await navigator.serial.requestPort();
-        const baudRate = Number($("baudRate").value || 250000);
+        const baudRate = Number($("baudRate").value || DEFAULTS.baudRate);
         await serialPort.open({ baudRate });
         serialWriter = serialPort.writable.getWriter();
         setSerialStatus(`Connected at ${baudRate} baud.`);
