@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -96,17 +96,27 @@
       max-height: 420px;
       background: #0a0d13;
     }
-    pre {
+    #gcodeOut {
       margin: 0;
       background: #0b0f18;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px;
       min-height: 250px;
       max-height: 420px;
       overflow: auto;
       white-space: pre;
       font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      resize: vertical;
+    }
+    .serial-panel {
+      margin-top: 1rem;
+      padding-top: 0.8rem;
+      border-top: 1px solid var(--border);
+    }
+    #serialLog {
+      min-height: 140px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      resize: vertical;
     }
     .hint { color: var(--muted); font-size: 0.84rem; }
   </style>
@@ -177,9 +187,10 @@
 
         <div class="row">
           <label for="header">G‑Code header (optional, one command per line)</label>
-          <textarea id="header" rows="4">G21
+          <textarea id="header" rows="5">G21
 G90
-G92 X0 Y0 Z0</textarea>
+G92 X0 Y0 Z0
+M203 X4 Y4 Z4 E100</textarea>
         </div>
 
         <div class="row">
@@ -212,16 +223,67 @@ G92 X0 Y0 Z0</textarea>
         <div class="row">
           <label>Generated G‑Code</label>
           <div style="position:relative;">
-            <pre id="gcodeOut"></pre>
+            <textarea id="gcodeOut" spellcheck="false" placeholder="Generated G-Code appears here and can be edited manually."></textarea>
             <button id="copyBtn" style="position:absolute; top:8px; right:8px; width:auto; font-size:12px; padding:4px 8px;" disabled>Copy</button>
           </div>
         </div>
+
+        <div class="serial-panel">
+          <div class="row">
+            <label>CNC Serial Control</label>
+            <div id="serialSupportMsg" class="hint">Checking Web Serial support...</div>
+            <div id="serialStatus" class="status"></div>
+          </div>
+
+          <div class="row inline">
+            <div>
+              <label for="baudRate">Baud rate</label>
+              <select id="baudRate">
+                <option value="250000">250000</option>
+                <option value="115200">115200</option>
+                <option value="57600">57600</option>
+                <option value="38400">38400</option>
+                <option value="19200">19200</option>
+                <option value="9600">9600</option>
+              </select>
+            </div>
+            <div>
+              <label for="okTimeoutSec">Wait for OK (s)</label>
+              <input id="okTimeoutSec" type="number" step="1" />
+              <div class="hint">0 to disable</div>
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <button id="connectSerialBtn">Connect USB Serial</button>
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <button id="disconnectSerialBtn" disabled>Disconnect</button>
+            </div>
+          </div>
+
+          <div class="row inline">
+            <button id="sendGcodeBtn" disabled>Send full G-Code</button>
+            <button id="homeBtn" disabled>Home (G28)</button>
+          </div>
+
+          <div class="row inline">
+            <input id="terminalCmd" type="text" placeholder="Manual command, e.g. M114" />
+            <button id="sendTerminalBtn" disabled>Send</button>
+          </div>
+
+          <div class="row">
+            <label for="serialLog">Serial Terminal Log</label>
+            <textarea id="serialLog" readonly spellcheck="false" placeholder="Printer responses appear here..."></textarea>
+          </div>
+        </div>
+
       </section>
     </div>
   </div>
 
   <script>
-    // --- Kleine Utility-Funktionen ---
+    // --- Small utility helpers ---
     const $ = (id) => document.getElementById(id);
     const statusEl = $("status");
     const uploadStatusEl = $("uploadStatus");
@@ -256,8 +318,10 @@ G92 X0 Y0 Z0</textarea>
       mapX: "Y", mapY: "Z",
       mirrorX: false, mirrorY: true,
       tolerance: "0.05", feed: "800", decimals: "3",
-      header: "G21\nG90\nG92 X0 Y0 Z0", footer: "M2",
-      ext: "gcode"
+      header: "G21\nG90\nG92 X0 Y0 Z0\nM203 X4 Y4 Z4 E100", footer: "M2",
+      ext: "gcode",
+      baudRate: "250000",
+      okTimeoutSec: "20"
     };
 
     function saveConfig() {
@@ -271,13 +335,32 @@ G92 X0 Y0 Z0</textarea>
         decimals: $("decimals").value,
         header: $("header").value,
         footer: $("footer").value,
-        ext: $("ext").value
+        ext: $("ext").value,
+        baudRate: $("baudRate").value,
+        okTimeoutSec: $("okTimeoutSec").value
       };
       const expires = new Date(Date.now() + COOKIE_DAYS * 864e5).toUTCString();
       document.cookie = `${COOKIE_NAME}=${encodeURIComponent(JSON.stringify(config))}; expires=${expires}; path=/`;
     }
 
+    function applyDefaults() {
+      $("mapX").value = DEFAULTS.mapX;
+      $("mapY").value = DEFAULTS.mapY;
+      $("mirrorX").checked = DEFAULTS.mirrorX;
+      $("mirrorY").checked = DEFAULTS.mirrorY;
+      $("tolerance").value = DEFAULTS.tolerance;
+      $("feed").value = DEFAULTS.feed;
+      $("decimals").value = DEFAULTS.decimals;
+      $("header").value = DEFAULTS.header;
+      $("footer").value = DEFAULTS.footer;
+      $("ext").value = DEFAULTS.ext;
+      $("baudRate").value = DEFAULTS.baudRate;
+      $("okTimeoutSec").value = DEFAULTS.okTimeoutSec;
+    }
+
     function loadConfig() {
+      applyDefaults();
+
       const match = document.cookie.match(new RegExp(`(?:^|; )${COOKIE_NAME}=([^;]*)`));
       if (!match) return false;
       try {
@@ -292,6 +375,12 @@ G92 X0 Y0 Z0</textarea>
         if (typeof config.header === "string") $("header").value = config.header;
         if (typeof config.footer === "string") $("footer").value = config.footer;
         if (config.ext && ["gcode","nc"].includes(config.ext)) $("ext").value = config.ext;
+        if (config.baudRate && ["250000","115200","57600","38400","19200","9600"].includes(String(config.baudRate))) {
+          $("baudRate").value = String(config.baudRate);
+        }
+        if (config.okTimeoutSec !== undefined && config.okTimeoutSec !== null && config.okTimeoutSec !== "") {
+          $("okTimeoutSec").value = String(config.okTimeoutSec);
+        }
         return true;
       } catch (e) {
         console.warn("Failed to parse cookie", e);
@@ -303,16 +392,7 @@ G92 X0 Y0 Z0</textarea>
       // Delete cookie
       document.cookie = `${COOKIE_NAME}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/`;
       // Restore defaults
-      $("mapX").value = DEFAULTS.mapX;
-      $("mapY").value = DEFAULTS.mapY;
-      $("mirrorX").checked = DEFAULTS.mirrorX;
-      $("mirrorY").checked = DEFAULTS.mirrorY;
-      $("tolerance").value = DEFAULTS.tolerance;
-      $("feed").value = DEFAULTS.feed;
-      $("decimals").value = DEFAULTS.decimals;
-      $("header").value = DEFAULTS.header;
-      $("footer").value = DEFAULTS.footer;
-      $("ext").value = DEFAULTS.ext;
+      applyDefaults();
       refreshPreviewIfLoaded();
     }
 
@@ -328,7 +408,8 @@ G92 X0 Y0 Z0</textarea>
       loadConfig();
       // Save on any settings change
       const watchEls = [$("mapX"), $("mapY"), $("mirrorX"), $("mirrorY"),
-                         $("tolerance"), $("feed"), $("decimals"), $("ext")];
+                         $("tolerance"), $("feed"), $("decimals"), $("ext"),
+                         $("baudRate"), $("okTimeoutSec")];
       watchEls.forEach(el => {
         if (el) el.addEventListener("change", () => {
           saveConfig();
@@ -341,12 +422,277 @@ G92 X0 Y0 Z0</textarea>
       });
       // Reset button
       $("resetBtn").addEventListener("click", resetConfig);
+
+      $("gcodeOut").addEventListener("input", () => {
+        lastGcode = getCurrentGcode();
+        const has = !!lastGcode.trim();
+        $("downloadBtn").disabled = !has;
+        $("copyBtn").disabled = !has;
+        $("ncviewerBtn").disabled = !has;
+        updateSerialUiState();
+      });
+
+      const serialSupported = supportsWebSerial();
+      $("serialSupportMsg").textContent = serialSupported
+        ? "Web Serial API available (Chromium-based browsers)."
+        : "Web Serial API is not available in this browser. Use Download to transfer G-Code manually.";
+      if (!serialSupported) {
+        setSerialStatus("Serial disabled (browser unsupported).", true);
+      }
+
+      $("connectSerialBtn").addEventListener("click", openSerialConnection);
+      $("disconnectSerialBtn").addEventListener("click", closeSerialConnection);
+
+      $("sendGcodeBtn").addEventListener("click", async () => {
+        const lines = getCurrentGcode().split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        if (!lines.length) {
+          setSerialStatus("No G-Code to send.", true);
+          return;
+        }
+        serialIsSending = true;
+        updateSerialUiState();
+        try {
+          setSerialStatus(`Sending ${lines.length} lines...`);
+          for (let i = 0; i < lines.length; i++) {
+            await sendSerialLine(lines[i]);
+          }
+          setSerialStatus(`G-Code sent (${lines.length} lines).`);
+        } catch (err) {
+          setSerialStatus("Send failed: " + (err?.message || err), true);
+        } finally {
+          serialIsSending = false;
+          updateSerialUiState();
+        }
+      });
+
+      $("homeBtn").addEventListener("click", async () => {
+        const cmd = "G28";
+        serialIsSending = true;
+        updateSerialUiState();
+        try {
+          await sendSerialLine(cmd);
+          setSerialStatus(`Home command sent: ${cmd}`);
+        } catch (err) {
+          setSerialStatus("Home failed: " + (err?.message || err), true);
+        } finally {
+          serialIsSending = false;
+          updateSerialUiState();
+        }
+      });
+
+      $("sendTerminalBtn").addEventListener("click", async () => {
+        const cmd = $("terminalCmd").value.trim();
+        if (!cmd) return;
+        serialIsSending = true;
+        updateSerialUiState();
+        try {
+          await sendSerialLine(cmd);
+          $("terminalCmd").value = "";
+          setSerialStatus("Command sent.");
+        } catch (err) {
+          setSerialStatus("Terminal send failed: " + (err?.message || err), true);
+        } finally {
+          serialIsSending = false;
+          updateSerialUiState();
+        }
+      });
+
+      $("terminalCmd").addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          $("sendTerminalBtn").click();
+        }
+      });
+
+      updateSerialUiState();
     });
 // --- Zustand ---
     let svgText = "";
     let parsedShape = null; // Any SVG shape element (path, rect, circle, etc.)
     let lastGcode = "";
     let lastFileBase = "output";
+
+    let serialPort = null;
+    let serialReader = null;
+    let serialWriter = null;
+    let serialKeepReading = false;
+    let serialIsSending = false;
+    let serialReadBuffer = "";
+    let pendingOkWaiter = null;
+
+    function supportsWebSerial() {
+      return typeof navigator !== "undefined" && "serial" in navigator;
+    }
+
+    function getCurrentGcode() {
+      return $("gcodeOut").value || "";
+    }
+
+    function shouldWaitForOk() {
+      return getOkTimeoutSec() > 0;
+    }
+
+    function getOkTimeoutSec() {
+      return Number($("okTimeoutSec").value);
+    }
+
+    function appendSerialLog(text) {
+      const el = $("serialLog");
+      if (!el) return;
+      el.value += text;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function setSerialStatus(msg, isError = false) {
+      const el = $("serialStatus");
+      if (!el) return;
+      el.textContent = msg || "";
+      el.className = "status " + (msg ? (isError ? "err" : "ok") : "");
+    }
+
+    function updateSerialUiState() {
+      const connected = !!serialPort?.readable && !!serialPort?.writable;
+      const hasGcode = !!getCurrentGcode().trim();
+      $("connectSerialBtn").disabled = !supportsWebSerial() || connected;
+      $("disconnectSerialBtn").disabled = !connected;
+      $("sendGcodeBtn").disabled = !connected || !hasGcode || serialIsSending;
+      $("homeBtn").disabled = !connected || serialIsSending;
+      $("sendTerminalBtn").disabled = !connected || serialIsSending;
+      $("baudRate").disabled = connected || serialIsSending;
+      $("okTimeoutSec").disabled = serialIsSending;
+    }
+
+    function resolveOkWaiterIfNeeded(line) {
+      if (!pendingOkWaiter) return;
+      if (/^\s*ok\b/i.test(line || "")) {
+        const waiter = pendingOkWaiter;
+        pendingOkWaiter = null;
+        clearTimeout(waiter.timeoutId);
+        waiter.resolve();
+      }
+    }
+
+    function processSerialChunk(text) {
+      appendSerialLog(text);
+      serialReadBuffer += text;
+
+      const lines = serialReadBuffer.split(/\r?\n/);
+      serialReadBuffer = lines.pop() || "";
+      lines.forEach(resolveOkWaiterIfNeeded);
+
+      // Fallback for devices sending plain "ok" without trailing newline
+      if (pendingOkWaiter && /^\s*ok\s*$/i.test(serialReadBuffer)) {
+        resolveOkWaiterIfNeeded(serialReadBuffer);
+        serialReadBuffer = "";
+      }
+    }
+
+    function waitForPrinterOk() {
+      if (pendingOkWaiter) {
+        throw new Error("Another OK wait is already active.");
+      }
+      const timeoutSec = getOkTimeoutSec();
+      if (timeoutSec <= 0) {
+        return Promise.resolve();
+      }
+      const timeoutMs = Math.floor(timeoutSec * 1000);
+      return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          if (!pendingOkWaiter) return;
+          pendingOkWaiter = null;
+          reject(new Error(`Timeout waiting for printer OK (${timeoutSec} s)`));
+        }, timeoutMs);
+        pendingOkWaiter = { resolve, reject, timeoutId };
+      });
+    }
+
+    async function startSerialReader() {
+      if (!serialPort?.readable) return;
+      const decoder = new TextDecoderStream();
+      serialPort.readable.pipeTo(decoder.writable).catch(() => {});
+      serialReader = decoder.readable.getReader();
+      serialKeepReading = true;
+      while (serialKeepReading && serialReader) {
+        try {
+          const { value, done } = await serialReader.read();
+          if (done) break;
+          if (value) processSerialChunk(value);
+        } catch (_) {
+          break;
+        }
+      }
+    }
+
+    async function openSerialConnection() {
+      if (!supportsWebSerial()) {
+        setSerialStatus("Web Serial API not supported in this browser. Use Download instead.", true);
+        return;
+      }
+      try {
+        serialPort = await navigator.serial.requestPort();
+        const baudRate = Number($("baudRate").value);
+        await serialPort.open({ baudRate });
+        serialWriter = serialPort.writable.getWriter();
+        setSerialStatus(`Connected at ${baudRate} baud.`);
+        appendSerialLog(`\n[connected ${baudRate} baud]\n`);
+        startSerialReader();
+      } catch (err) {
+        serialPort = null;
+        setSerialStatus("Serial connect failed: " + (err?.message || err), true);
+      }
+      updateSerialUiState();
+    }
+
+    async function closeSerialConnection() {
+      try {
+        serialKeepReading = false;
+        if (pendingOkWaiter) {
+          clearTimeout(pendingOkWaiter.timeoutId);
+          pendingOkWaiter.reject(new Error("Serial connection closed while waiting for OK."));
+          pendingOkWaiter = null;
+        }
+        if (serialReader) {
+          await serialReader.cancel().catch(() => {});
+          serialReader.releaseLock();
+          serialReader = null;
+        }
+        if (serialWriter) {
+          serialWriter.releaseLock();
+          serialWriter = null;
+        }
+        if (serialPort) {
+          await serialPort.close().catch(() => {});
+        }
+      } finally {
+        serialPort = null;
+        serialReadBuffer = "";
+        setSerialStatus("Disconnected.");
+        appendSerialLog("\n[disconnected]\n");
+        updateSerialUiState();
+      }
+    }
+
+    function isCommentOnlyLine(line) {
+      if (!line) return false;
+      if (line.startsWith(";")) return true;
+      if (/^\(.*\)$/.test(line)) return true;
+      return false;
+    }
+
+    async function sendSerialLine(line) {
+      if (!serialWriter) throw new Error("Serial port not connected.");
+      const trimmed = (line || "").trim();
+      if (!trimmed) return;
+
+      const encoder = new TextEncoder();
+      const payload = trimmed.endsWith("\n") ? trimmed : `${trimmed}\n`;
+      await serialWriter.write(encoder.encode(payload));
+      appendSerialLog(`> ${trimmed}\n`);
+
+      if (shouldWaitForOk() && !isCommentOnlyLine(trimmed)) {
+        await waitForPrinterOk();
+      }
+    }
 
     const SHAPE_SELECTOR = "path,rect,circle,ellipse,line,polyline,polygon";
 
@@ -1094,11 +1440,12 @@ G92 X0 Y0 Z0</textarea>
     }
 
     function resetOutput() {
-      $("gcodeOut").textContent = "";
+      $("gcodeOut").value = "";
       lastGcode = "";
       $("downloadBtn").disabled = true;
       $("copyBtn").disabled = true;
       $("ncviewerBtn").disabled = true;
+      updateSerialUiState();
     }
 
     $("svgFile").addEventListener("change", async (ev) => {
@@ -1152,10 +1499,11 @@ G92 X0 Y0 Z0</textarea>
         });
 
         lastGcode = gcode;
-        $("gcodeOut").textContent = gcode;
+        $("gcodeOut").value = gcode;
         $("downloadBtn").disabled = false;
         $("copyBtn").disabled = false;
         $("ncviewerBtn").disabled = false;
+        updateSerialUiState();
 
         setStatus(`G-Code generated: ${points.length} points (tolerance ${tolerance} mm).`);
       } catch (err) {
@@ -1165,9 +1513,11 @@ G92 X0 Y0 Z0</textarea>
     });
 
     $("downloadBtn").addEventListener("click", () => {
-      if (!lastGcode) return;
+      const gcode = getCurrentGcode();
+      if (!gcode.trim()) return;
+      lastGcode = gcode;
       const ext = $("ext").value || "gcode";
-      const blob = new Blob([lastGcode], { type: "text/plain;charset=utf-8" });
+      const blob = new Blob([gcode], { type: "text/plain;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -1179,9 +1529,11 @@ G92 X0 Y0 Z0</textarea>
     });
 
     $("copyBtn").addEventListener("click", async () => {
-      if (!lastGcode) return;
+      const gcode = getCurrentGcode();
+      if (!gcode.trim()) return;
+      lastGcode = gcode;
       try {
-        await navigator.clipboard.writeText(lastGcode);
+        await navigator.clipboard.writeText(gcode);
         const btn = $("copyBtn");
         const old = btn.textContent;
         btn.textContent = "Copied!";
@@ -1193,9 +1545,11 @@ G92 X0 Y0 Z0</textarea>
     });
 
     $("ncviewerBtn").addEventListener("click", async () => {
-      if (!lastGcode) return;
+      const gcode = getCurrentGcode();
+      if (!gcode.trim()) return;
+      lastGcode = gcode;
       try {
-        await navigator.clipboard.writeText(lastGcode);
+        await navigator.clipboard.writeText(gcode);
         setStatus("NCViewer opened. G‑Code is in clipboard.");
       } catch (_) {
         setStatus("NCViewer opened. If needed, copy G‑Code manually.");
