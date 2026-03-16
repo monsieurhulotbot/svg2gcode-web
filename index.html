@@ -119,6 +119,32 @@
       resize: vertical;
     }
     .hint { color: var(--muted); font-size: 0.84rem; }
+    .progress-wrap {
+      margin-top: 8px;
+      display: none;
+      gap: 6px;
+      align-items: center;
+    }
+    .progress-wrap.active { display: grid; }
+    #genProgress {
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+    }
+    #genProgressFill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #3b82f6, #22d3ee);
+      transition: width 120ms linear;
+    }
+    #genProgressText {
+      font-size: 0.82rem;
+      color: var(--muted);
+      text-align: right;
+    }
   </style>
 </head>
 <body>
@@ -209,6 +235,12 @@ M203 X4 Y4 Z4 E100</textarea>
         </div>
 
         <div id="status" class="status"></div>
+        <div id="genProgressWrap" class="progress-wrap" aria-live="polite" aria-label="G-Code generation progress">
+          <div id="genProgress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="genProgressFill"></div>
+          </div>
+          <div id="genProgressText">0%</div>
+        </div>
 
         <div class="row" style="margin-top:1rem;">
           <button id="resetBtn" style="background:transparent; border:1px solid var(--border); color:var(--muted); font-size:0.82rem; padding:5px 10px;">Reset all settings to defaults</button>
@@ -287,6 +319,10 @@ M203 X4 Y4 Z4 E100</textarea>
     const $ = (id) => document.getElementById(id);
     const statusEl = $("status");
     const uploadStatusEl = $("uploadStatus");
+    const genProgressWrapEl = $("genProgressWrap");
+    const genProgressEl = $("genProgress");
+    const genProgressFillEl = $("genProgressFill");
+    const genProgressTextEl = $("genProgressText");
 
     function setStatus(msg, isError = false) {
       statusEl.textContent = msg || "";
@@ -297,6 +333,27 @@ M203 X4 Y4 Z4 E100</textarea>
         uploadStatusEl.textContent = msg || "";
         uploadStatusEl.className = "status " + (msg ? (isError ? "err" : "ok") : "");
       }
+    }
+
+    function showGenerationProgress(show) {
+      if (!genProgressWrapEl) return;
+      genProgressWrapEl.classList.toggle("active", !!show);
+    }
+
+    function setGenerationProgress(percent) {
+      const safe = Math.max(0, Math.min(100, Number(percent) || 0));
+      if (genProgressFillEl) genProgressFillEl.style.width = `${safe.toFixed(1)}%`;
+      if (genProgressTextEl) genProgressTextEl.textContent = `${Math.round(safe)}%`;
+      if (genProgressEl) genProgressEl.setAttribute("aria-valuenow", String(Math.round(safe)));
+    }
+
+    function resetGenerationProgress() {
+      setGenerationProgress(0);
+      showGenerationProgress(false);
+    }
+
+    function nextUiTick() {
+      return new Promise((resolve) => requestAnimationFrame(() => resolve()));
     }
 
     function fmt(n, decimals) {
@@ -1128,6 +1185,136 @@ M203 X4 Y4 Z4 E100</textarea>
       return points;
     }
 
+    // Async/chunked variant so the UI thread stays responsive and progress updates can render.
+    async function sampleShapeAsync(shapeEl, tolerance, onProgress) {
+      const ns = "http://www.w3.org/2000/svg";
+      const tmpSvg = document.createElementNS(ns, "svg");
+      tmpSvg.setAttribute("viewBox", "0 0 10000 10000");
+      tmpSvg.style.position = "absolute";
+      tmpSvg.style.visibility = "hidden";
+      tmpSvg.style.width = "0";
+      tmpSvg.style.height = "0";
+      const clone = shapeEl.cloneNode(true);
+      tmpSvg.appendChild(clone);
+      document.body.appendChild(tmpSvg);
+
+      try {
+        const totalLen = clone.getTotalLength();
+        if (!isFinite(totalLen) || totalLen <= 0) {
+          throw new Error("Shape length is 0 or invalid.");
+        }
+
+        const ptAt = (t) => {
+          const p = clone.getPointAtLength(t);
+          return { x: p.x, y: p.y };
+        };
+
+        const anchorCoords = extractAnchors(shapeEl);
+        let anchorLengths;
+
+        onProgress?.(5);
+
+        if (anchorCoords.length >= 2) {
+          anchorLengths = await mapAnchorsToLengthAsync(anchorCoords, clone, totalLen, (p) => {
+            onProgress?.(5 + p * 25);
+          });
+        } else {
+          const seedCount = Math.max(20, Math.ceil(totalLen / 1));
+          anchorLengths = [];
+          for (let i = 0; i <= seedCount; i++) {
+            anchorLengths.push((i / seedCount) * totalLen);
+            if ((i % 100) === 0) await nextUiTick();
+          }
+          onProgress?.(30);
+        }
+
+        if (anchorLengths[0] > 0.001) anchorLengths.unshift(0);
+        if (totalLen - anchorLengths[anchorLengths.length - 1] > 0.001) anchorLengths.push(totalLen);
+
+        const tolSq = tolerance * tolerance;
+        const MAX_DEPTH = 12;
+        const points = [ptAt(anchorLengths[0])];
+
+        const segmentCount = Math.max(1, anchorLengths.length - 1);
+        for (let i = 1; i < anchorLengths.length; i++) {
+          const segBase = 30 + ((i - 1) / segmentCount) * 70;
+          const segSpan = 70 / segmentCount;
+          await subdivideIterativeAsync(
+            anchorLengths[i - 1],
+            anchorLengths[i],
+            ptAt,
+            tolSq,
+            MAX_DEPTH,
+            points,
+            (localP) => onProgress?.(segBase + localP * segSpan)
+          );
+          onProgress?.(30 + (i / segmentCount) * 70);
+        }
+
+        return points;
+      } finally {
+        if (tmpSvg.parentNode) {
+          tmpSvg.parentNode.removeChild(tmpSvg);
+        }
+      }
+    }
+
+    async function subdivideIterativeAsync(tA, tB, ptAt, tolSq, depth, out, onProgress) {
+      const stack = [{ tA, tB, depth, stage: 0, pB: null }];
+      let processed = 0;
+      let lastUi = performance.now();
+      let monotonicProgress = 0;
+
+      while (stack.length) {
+        const node = stack.pop();
+
+        if (node.stage === 1) {
+          out.push(node.pB);
+          continue;
+        }
+
+        const segTA = node.tA;
+        const segTB = node.tB;
+        const segDepth = node.depth;
+
+        if (segDepth <= 0 || (segTB - segTA) < 0.001) {
+          out.push(ptAt(segTB));
+          processed++;
+        } else {
+          const tMid = (segTA + segTB) / 2;
+          const pA = out[out.length - 1];
+          const pB = ptAt(segTB);
+          const pMid = ptAt(tMid);
+
+          const mx = (pA.x + pB.x) / 2;
+          const my = (pA.y + pB.y) / 2;
+          const dSq = (pMid.x - mx) * (pMid.x - mx) + (pMid.y - my) * (pMid.y - my);
+
+          if (dSq > tolSq) {
+            stack.push({ tA: tMid, tB: segTB, depth: segDepth - 1, stage: 0, pB: null });
+            stack.push({ tA: 0, tB: 0, depth: 0, stage: 1, pB: pMid });
+            stack.push({ tA: segTA, tB: tMid, depth: segDepth - 1, stage: 0, pB: null });
+          } else {
+            out.push(pB);
+          }
+          processed++;
+        }
+
+        const estTotal = processed + stack.length;
+        const rawProgress = estTotal > 0 ? (processed / estTotal) : 1;
+        monotonicProgress = Math.max(monotonicProgress, rawProgress);
+        onProgress?.(Math.min(1, monotonicProgress));
+
+        const now = performance.now();
+        if ((processed % 200) === 0 || (now - lastUi) > 30) {
+          await nextUiTick();
+          lastUi = performance.now();
+        }
+      }
+
+      onProgress?.(1);
+    }
+
     // Recursively subdivide an arc-length interval [tA, tB].
     // Adds the midpoint (and recurses) if it deviates from the straight line A→B.
     // Always adds B at the end.
@@ -1318,6 +1505,62 @@ M203 X4 Y4 Z4 E100</textarea>
       return lengths;
     }
 
+    async function mapAnchorsToLengthAsync(anchors, shapeClone, totalLen, onProgress) {
+      const lengths = [0];
+      let searchStart = 0;
+      const totalAnchors = Math.max(1, anchors.length - 1);
+
+      for (let a = 1; a < anchors.length; a++) {
+        const target = anchors[a];
+        const lo = searchStart;
+        const hi = totalLen;
+        const steps = 200;
+        const span = hi - lo;
+
+        let bestT = lo;
+        let bestDist = Infinity;
+
+        for (let s = 0; s <= steps; s++) {
+          const t = lo + (s / steps) * span;
+          const p = shapeClone.getPointAtLength(t);
+          const d = (p.x - target.x) ** 2 + (p.y - target.y) ** 2;
+          if (d < bestDist) {
+            bestDist = d;
+            bestT = t;
+          }
+          if ((s % 40) === 0) {
+            const anchorBase = (a - 1) / totalAnchors;
+            const anchorSpan = 1 / totalAnchors;
+            onProgress?.(anchorBase + (s / steps) * anchorSpan * 0.8);
+            await nextUiTick();
+          }
+        }
+
+        let refineLo = Math.max(lo, bestT - span / steps);
+        let refineHi = Math.min(hi, bestT + span / steps);
+        for (let r = 0; r < 15; r++) {
+          const t1 = refineLo + (refineHi - refineLo) / 3;
+          const t2 = refineLo + 2 * (refineHi - refineLo) / 3;
+          const p1 = shapeClone.getPointAtLength(t1);
+          const p2 = shapeClone.getPointAtLength(t2);
+          const d1 = (p1.x - target.x) ** 2 + (p1.y - target.y) ** 2;
+          const d2 = (p2.x - target.x) ** 2 + (p2.y - target.y) ** 2;
+          if (d1 < d2) refineHi = t2; else refineLo = t1;
+        }
+        bestT = (refineLo + refineHi) / 2;
+
+        if (bestT > searchStart + 0.01) {
+          lengths.push(bestT);
+          searchStart = bestT;
+        }
+
+        onProgress?.(a / totalAnchors);
+        await nextUiTick();
+      }
+
+      return lengths;
+    }
+
     // Wandelt Punkte in G-Code um mit Achsen-Mapping:
     // SVG X -> G-Code Y
     // SVG Y -> G-Code Z
@@ -1398,6 +1641,86 @@ M203 X4 Y4 Z4 E100</textarea>
       return out.join("\n") + "\n";
     }
 
+    async function pointsToGcodeAsync(points, options, onProgress) {
+      const { feed, decimals, headerLines, footerLines } = options;
+
+      const map = {
+        x: $("mapX").value,
+        y: $("mapY").value
+      };
+      const mirror = {
+        x: $("mirrorX").checked,
+        y: $("mirrorY").checked
+      };
+
+      let bbox = null;
+      if (mirror.x || mirror.y) {
+        bbox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+        for (let i = 0; i < points.length; i++) {
+          const p = points[i];
+          if (p.x < bbox.minX) bbox.minX = p.x;
+          if (p.x > bbox.maxX) bbox.maxX = p.x;
+          if (p.y < bbox.minY) bbox.minY = p.y;
+          if (p.y > bbox.maxY) bbox.maxY = p.y;
+          if ((i % 500) === 0) {
+            onProgress?.((i / Math.max(1, points.length)) * 0.15);
+            await nextUiTick();
+          }
+        }
+      }
+
+      function mapPoint(p) {
+        const cnc = { X: 0, Y: 0, Z: 0 };
+        if (map.x) {
+          let val = p.x;
+          if (mirror.x && bbox) val = -val + bbox.maxX;
+          cnc[map.x] = (cnc[map.x] || 0) + val;
+        }
+        if (map.y) {
+          let val = p.y;
+          if (mirror.y && bbox) val = -val + bbox.maxY;
+          cnc[map.y] = (cnc[map.y] || 0) + val;
+        }
+        return cnc;
+      }
+
+      const reordered = reorderForMinTravel(points, mapPoint);
+      points = reordered.points;
+      const isClosedPath = reordered.isClosed;
+
+      if (!points.length) {
+        throw new Error("No points to convert.");
+      }
+
+      const out = [];
+      out.push("; Generated by SVG->GCode (generic mapping)");
+      out.push(`; Mapping: SVG X→${map.x || "-"}, Y→${map.y || "-"}`);
+      if (mirror.x) out.push("; X inverted");
+      if (mirror.y) out.push("; Y inverted");
+      out.push(...headerLines);
+
+      const first = mapPoint(points[0]);
+      out.push(`G0 X${fmt(first.X, decimals)} Y${fmt(first.Y, decimals)} Z${fmt(first.Z, decimals)}`);
+
+      const totalPoints = Math.max(1, points.length - 1);
+      for (let i = 1; i < points.length; i++) {
+        const p = mapPoint(points[i]);
+        out.push(`G1 X${fmt(p.X, decimals)} Y${fmt(p.Y, decimals)} Z${fmt(p.Z, decimals)} F${feed}`);
+        if ((i % 300) === 0) {
+          onProgress?.(0.15 + (i / totalPoints) * 0.85);
+          await nextUiTick();
+        }
+      }
+
+      if (isClosedPath) {
+        out.push("G0 X0 Y0 Z0");
+      }
+
+      out.push(...footerLines);
+      onProgress?.(1);
+      return out.join("\n") + "\n";
+    }
+
     // Reorder sampled points so the G0 rapid from CNC origin is as short as possible.
     //  - Closed path (first ≈ last point): rotate array so nearest-to-origin point is first,
     //    then re-close (duplicate the new first point at end).
@@ -1445,6 +1768,7 @@ M203 X4 Y4 Z4 E100</textarea>
       $("downloadBtn").disabled = true;
       $("copyBtn").disabled = true;
       $("ncviewerBtn").disabled = true;
+      resetGenerationProgress();
       updateSerialUiState();
     }
 
@@ -1479,23 +1803,40 @@ M203 X4 Y4 Z4 E100</textarea>
       }
     });
 
-    $("generateBtn").addEventListener("click", () => {
+    $("generateBtn").addEventListener("click", async () => {
       if (!parsedShape) {
         setStatus("Please load a valid SVG first.", true);
         return;
       }
+
+      const generateBtn = $("generateBtn");
+      const prevGenerateLabel = generateBtn.textContent;
 
       try {
         const tolerance = Math.max(0.001, Number($("tolerance").value || 0.05));
         const feed = Number($("feed").value || 800);
         const decimals = Math.max(0, Math.min(6, Number($("decimals").value || 3)));
 
-        const points = sampleShape(parsedShape, tolerance);
-        const gcode = pointsToGcode(points, {
+        generateBtn.disabled = true;
+        $("downloadBtn").disabled = true;
+        $("copyBtn").disabled = true;
+        $("ncviewerBtn").disabled = true;
+        showGenerationProgress(true);
+        setGenerationProgress(1);
+        setStatus("Generating G-Code…");
+        generateBtn.textContent = "Generating…";
+
+        const points = await sampleShapeAsync(parsedShape, tolerance, (p) => {
+          setGenerationProgress(Math.min(75, Math.max(1, p * 75)));
+        });
+
+        const gcode = await pointsToGcodeAsync(points, {
           feed,
           decimals,
           headerLines: linesFromTextarea($("header").value),
           footerLines: linesFromTextarea($("footer").value)
+        }, (p) => {
+          setGenerationProgress(75 + Math.max(0, Math.min(1, p)) * 25);
         });
 
         lastGcode = gcode;
@@ -1505,10 +1846,16 @@ M203 X4 Y4 Z4 E100</textarea>
         $("ncviewerBtn").disabled = false;
         updateSerialUiState();
 
+        setGenerationProgress(100);
         setStatus(`G-Code generated: ${points.length} points (tolerance ${tolerance} mm).`);
       } catch (err) {
         resetOutput();
         setStatus("Error generating G‑Code: " + err.message, true);
+      } finally {
+        generateBtn.textContent = prevGenerateLabel;
+        generateBtn.disabled = !parsedShape;
+        updateSerialUiState();
+        setTimeout(() => resetGenerationProgress(), 350);
       }
     });
 
